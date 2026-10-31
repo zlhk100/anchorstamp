@@ -1,4 +1,6 @@
 // Layout-0 conformance vectors. Anchor: the RFC 8032 section 7.1 TEST 1 key.
+// That key is a published test key: its secret half is in the RFC, so it
+// anchors nothing and must never be trusted outside these tests.
 // One instance, a1 repeated 16 times. S0, S1, S2 chained at indices 0-2;
 // S4 at index 4; S2F a second index-2 record; SX signed by a non-anchor key;
 // S1T is S1 with one signature bit flipped.

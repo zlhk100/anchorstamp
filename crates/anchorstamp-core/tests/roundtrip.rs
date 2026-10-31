@@ -21,15 +21,9 @@ fn roundtrip_sighting(name: &str, h: &str) {
 
 #[test]
 fn sightings_roundtrip() {
-    for (name, h) in [
-        ("S0", S0),
-        ("S1", S1),
-        ("S2", S2),
-        ("S4", S4),
-        ("S2F", S2F),
-        ("SX", SX),
-        ("S1T", S1T),
-    ] {
+    for (name, h) in
+        [("S0", S0), ("S1", S1), ("S2", S2), ("S4", S4), ("S2F", S2F), ("SX", SX), ("S1T", S1T)]
+    {
         roundtrip_sighting(name, h);
     }
 }

@@ -49,11 +49,27 @@ pub const JOINREF_MAX_LEN: usize = 19 + 1 + 3 + SUBJECT_MAX;
 /// Observed-data class shared with `coverage.over`.
 pub const CLASS_COMMAND_EXECUTION: u16 = 1;
 
+/// Proof-of-concept observer control records, under `SchemeTag::OBSERVER`.
+/// Never executions. Index 0 of every instance; data = coverage start in
+/// milliseconds, u64.
+pub const CLASS_INSTANCE_START: u16 = 0xFFFD;
+/// Emitted after each rejected input line; data = cumulative count, u64.
+pub const CLASS_PARSE_REJECT: u16 = 0xFFFE;
+/// Last record when the input ends abnormally; data = reason, u8.
+pub const CLASS_STREAM_ENDED: u16 = 0xFFFF;
+
+/// `CLASS_STREAM_ENDED` reasons.
+pub const ENDED_ROTATED: u8 = 1;
+pub const ENDED_SHRUNK: u8 = 2;
+pub const ENDED_READ_ERROR: u8 = 3;
+
 /// Scheme registry tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SchemeTag(pub u16);
 
 impl SchemeTag {
+    /// Proof-of-concept observer control records; subject = instance id.
+    pub const OBSERVER: SchemeTag = SchemeTag(0xFFFD);
     /// Proof-of-concept scheme. Never accepted by a conforming reader.
     pub const DEMO: SchemeTag = SchemeTag(0xFFFE);
     /// Conformance-test scheme.

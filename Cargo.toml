@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/anchorstamp-core",
+    "crates/anchorstamp-verify",
 ]
 
 [workspace.package]
@@ -9,3 +10,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
+
+# Signature checks dominate test time; optimise dependencies in test builds.
+[profile.dev.package."*"]
+opt-level = 3
