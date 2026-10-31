@@ -13,21 +13,29 @@
 #       --target-dir target/leak-test           # only for --leak-test
 #
 # What it does, in order:
-#    1  preflight P-1..P-7; record `auditctl -s` and `auditctl -l`
-#    2  install the binaries into a new root-owned directory; record SHA-256
+#    1  preflight checks; record `auditctl -s` and `auditctl -l`
+#    2  install the binaries and scenarios into a new root-owned directory,
+#       each copied from a regular file through a descriptor; record SHA-256
 #    3  create the run directory (never reused) with sink/ and claims/
 #    4  add the audit rules for this run; record their exact text
 #    5  start the observer as a direct child
 #    6  wait for its anchor; check it is our child and runs as nobody
-#    7  run the scenario as the measured account, no terminal
-#    8  kill every process of the measured account; settle 2 s
-#    9  SIGTERM the observer by its pid; wait
+#    7  run the scenario as the measured account, no terminal, watching
+#       the audit log's size; at 3/4 of max_log_file the account is killed
+#    8  kill every process of the measured account by uid until none is
+#       left; settle 2 s
+#    9  SIGTERM the observer by its pid; wait at most 5 s, then SIGKILL
 #   10  delete the rules by exact text; compare rules and audit counters
 #   11  run the report as the operator
-# On any exit after step 4, steps 8, 9 and 10 run.
+# On any exit after step 4, steps 8, 9 and 10 run, with INT, TERM and HUP
+# ignored while they do.
 #
 # It deletes nothing, rotates nothing, kills nothing by name, and never
 # runs a binary from the workspace as root.
+#
+# The audit rules are appended, so any rule already on the exit list
+# would match first and stamp its own key; the preflight refuses unless
+# no rule is loaded at all.
 
 set -eu
 umask 022
@@ -86,74 +94,86 @@ esac
 # ---- 1 preflight -------------------------------------------------------
 log "step 1 preflight; scenario=$SCENARIO leak_test=$LEAK"
 
-# P-1  root, invoked through sudo by the operator who owns the build tree
-[ "$(id -u)" -eq 0 ] || die "P-1 not root"
-[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die "P-1 not invoked through sudo by an operator"
-[ -d "$TREE/target/release" ] || die "P-1/P-5 no build tree at $TREE/target/release — build it first"
+# root, invoked through sudo by the operator who owns the build tree
+[ "$(id -u)" -eq 0 ] || die "not root"
+[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die "not invoked through sudo by an operator"
+[ -d "$TREE/target/release" ] || die "no build tree at $TREE/target/release — build it first"
 OWNER=$(stat -c %U "$TREE/target/release")
-[ "$SUDO_USER" = "$OWNER" ] || die "P-1 SUDO_USER=$SUDO_USER does not own the build tree"
-log "P-1 ok euid=0 SUDO_USER is the build tree's owner"
+[ "$SUDO_USER" = "$OWNER" ] || die "SUDO_USER=$SUDO_USER does not own the build tree"
+log "preflight root: ok euid=0, SUDO_USER is the build tree's owner"
 
-# P-2  auditd active, audit enabled (1, not 2: rules must be removable)
-systemctl is-active --quiet auditd || die "P-2 auditd not active"
+# auditd active, audit enabled (1, not 2: rules must be removable)
+systemctl is-active --quiet auditd || die "auditd not active"
 STATUS_BEFORE=$(auditctl -s)
-printf '%s\n' "$STATUS_BEFORE" | grep -qx 'enabled 1' || die "P-2 audit not 'enabled 1'"
-log "P-2 ok auditd active, enabled 1"
+printf '%s\n' "$STATUS_BEFORE" | grep -qx 'enabled 1' || die "audit not 'enabled 1'"
+log "preflight audit: ok auditd active, enabled 1"
 
-# P-3  state directory absent, or root:root 0755 and not a symlink
+# state directory absent, or root:root 0755 and not a symlink
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
-    [ ! -L "$STATE" ] || die "P-3 $STATE is a symlink"
-    [ -d "$STATE" ] || die "P-3 $STATE is not a directory"
-    [ "$(stat -c '%u:%g %a' "$STATE")" = "0:0 755" ] || die "P-3 $STATE not root:root 0755"
+    [ ! -L "$STATE" ] || die "$STATE is a symlink"
+    [ -d "$STATE" ] || die "$STATE is not a directory"
+    [ "$(stat -c '%u:%g %a' "$STATE")" = "0:0 755" ] || die "$STATE not root:root 0755"
 fi
 for d in "$INSTALL_BASE"; do
     if [ -e "$d" ] || [ -L "$d" ]; then
-        [ ! -L "$d" ] && [ -d "$d" ] || die "P-3 $d is not a plain directory"
-        [ "$(stat -c '%u:%g %a' "$d")" = "0:0 755" ] || die "P-3 $d not root:root 0755"
+        [ ! -L "$d" ] && [ -d "$d" ] || die "$d is not a plain directory"
+        [ "$(stat -c '%u:%g %a' "$d")" = "0:0 755" ] || die "$d not root:root 0755"
     fi
 done
-log "P-3 ok"
+log "preflight directories: ok"
 
-# P-4  the measured account: exists, not in sudo or adm, no login shell
-AGENT_UID=$(id -u "$AGENT") || die "P-4 $AGENT does not exist"
+# the measured account: exists, not in sudo or adm, no login shell
+AGENT_UID=$(id -u "$AGENT") || die "$AGENT does not exist"
 AGENT_GROUPS=" $(id -nG "$AGENT") "
 case "$AGENT_GROUPS" in
-*" sudo "* | *" adm "* | *" wheel "* | *" root "*) die "P-4 $AGENT is in a privileged group" ;;
+*" sudo "* | *" adm "* | *" wheel "* | *" root "*) die "$AGENT is in a privileged group" ;;
 esac
 AGENT_SHELL=$(getent passwd "$AGENT" | cut -d: -f7)
 case "$AGENT_SHELL" in
 /usr/sbin/nologin | /sbin/nologin | /bin/false | /usr/bin/false) ;;
-*) die "P-4 $AGENT has shell $AGENT_SHELL" ;;
+*) die "$AGENT has shell $AGENT_SHELL" ;;
 esac
-[ "$AGENT_UID" -ne 0 ] && [ "$AGENT_UID" -ne "$NOBODY" ] || die "P-4 $AGENT uid $AGENT_UID"
-log "P-4 ok $AGENT uid=$AGENT_UID groups=$(id -nG "$AGENT") shell=$AGENT_SHELL"
+[ "$AGENT_UID" -ne 0 ] && [ "$AGENT_UID" -ne "$NOBODY" ] || die "$AGENT uid $AGENT_UID"
+log "preflight account: ok $AGENT uid=$AGENT_UID groups=$(id -nG "$AGENT") shell=$AGENT_SHELL"
 
-# P-5  release binaries built
+# no process of the measured account, by real or effective uid
+LEFT=$(pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") || true
+[ -z "$LEFT" ] || die "processes of $AGENT exist before the run: $(printf '%s' "$LEFT" | tr '\n' ' ')"
+log "preflight account processes: ok none"
+
+# release binaries built
 REL=$TREE/target/release
 OBS_SRC=$REL/anchorstamp-observe-audit
 if [ "$LEAK" -eq 1 ]; then
     OBS_SRC=$TREE/target/leak-test/release/anchorstamp-observe-audit
 fi
 for f in "$OBS_SRC" "$REL/agentsim" "$REL/demo-report"; do
-    [ -f "$f" ] && [ ! -L "$f" ] || die "P-5 missing $f — build it first"
+    [ -f "$f" ] && [ ! -L "$f" ] || die "missing $f — build it first"
 done
-log "P-5 ok"
+log "preflight binaries: ok"
 
-# P-6  current rules captured
+# current rules captured; none may be loaded. An existing exit-list rule
+# matches before ours and stamps its own key, so the observer would drop
+# those records; task and exclude rules can suppress records outright.
 RULES_BEFORE=$(auditctl -l)
-log "P-6 ok auditctl -l captured"
+[ "$RULES_BEFORE" = "No rules" ] || die "audit rules are loaded; this harness needs none (auditctl -l: $(printf '%s' "$RULES_BEFORE" | head -n3 | tr '\n' ';'))"
+log "preflight rules: ok auditctl -l captured: No rules"
 
-# P-7  audit.log below half of max_log_file
+# auditd.conf: audit.log below half of max_log_file; name_format NONE
 LOG_FILE=$(sed -n 's/^log_file *= *//p' "$AUDITD_CONF" | head -n1)
 LOG_FILE=${LOG_FILE:-/var/log/audit/audit.log}
 MAX_MB=$(sed -n 's/^max_log_file *= *//p' "$AUDITD_CONF" | head -n1)
-case "$MAX_MB" in '' | *[!0-9]*) die "P-7 cannot read max_log_file" ;; esac
+case "$MAX_MB" in '' | *[!0-9]*) die "cannot read max_log_file" ;; esac
 SIZE=$(stat -c %s "$LOG_FILE")
 LIMIT=$((MAX_MB * 1024 * 1024 / 2))
+WATCH_LIMIT=$((MAX_MB * 1024 * 1024 * 3 / 4))
 if [ "$SIZE" -gt "$LIMIT" ]; then
-    die "P-7 $LOG_FILE is $SIZE bytes, above half of max_log_file ($LIMIT). Rotate it yourself first: sudo service auditd rotate"
+    die "$LOG_FILE is $SIZE bytes, above half of max_log_file ($LIMIT). Rotate it yourself first: sudo service auditd rotate"
 fi
-log "P-7 ok $LOG_FILE size=$SIZE limit=$LIMIT"
+log "preflight log size: ok $LOG_FILE size=$SIZE limit=$LIMIT; the run is stopped at $WATCH_LIMIT"
+NAME_FORMAT=$(sed -n 's/^name_format *= *//p' "$AUDITD_CONF" | head -n1 | tr '[:lower:]' '[:upper:]')
+[ "$NAME_FORMAT" = "NONE" ] || die "auditd.conf name_format is '${NAME_FORMAT:-unset}', not NONE: every record would gain a node= field"
+log "preflight name_format: ok NONE"
 
 # ---- 2 install ---------------------------------------------------------
 ID=$(date -u +%Y%m%dT%H%M%S)-$$
@@ -162,11 +182,31 @@ KEY=as-$ID
 INST=$INSTALL_BASE/$ID
 mkdir -m 0755 "$INST"
 mkdir -m 0755 "$INST/scenarios"
-install -o root -g root -m 0755 "$OBS_SRC" "$INST/anchorstamp-observe-audit"
-install -o root -g root -m 0755 "$REL/agentsim" "$INST/agentsim"
-install -o root -g root -m 0755 "$REL/demo-report" "$INST/demo-report"
+
+# Copy one file in as root. The source sits in a tree the operator owns,
+# so: a regular file and not a symlink, checked just before the copy; the
+# copy is read through one descriptor, which must name the same file the
+# check saw.
+copy_in() {
+    local src=$1 dst=$2 mode=$3 fd seen held
+    [ -f "$src" ] && [ ! -L "$src" ] || die "install source not a regular file: $src"
+    exec {fd}<"$src" || die "install source cannot be opened: $src"
+    seen=$(stat -c '%F %d:%i' -- "$src")
+    held=$(stat -L -c '%F %d:%i' "/proc/self/fd/$fd")
+    if [ -L "$src" ] || [ "$seen" != "$held" ]; then
+        die "install source changed while being opened: $src"
+    fi
+    case "$held" in "regular file "* | "regular empty file "*) ;; *) die "install source not a regular file: $src" ;; esac
+    cat <&"$fd" >"$dst" || die "install copy failed: $src"
+    exec {fd}<&-
+    chown root:root "$dst"
+    chmod "$mode" "$dst"
+}
+copy_in "$OBS_SRC" "$INST/anchorstamp-observe-audit" 0755
+copy_in "$REL/agentsim" "$INST/agentsim" 0755
+copy_in "$REL/demo-report" "$INST/demo-report" 0755
 for s in $SCENARIOS; do
-    install -o root -g root -m 0644 "$HERE/scenarios/$s.txt" "$INST/scenarios/$s.txt"
+    copy_in "$HERE/scenarios/$s.txt" "$INST/scenarios/$s.txt" 0644
 done
 log "step 2 installed into $INST"
 while IFS= read -r l; do log "  sha256 $l"; done < <(cd "$INST" && sha256sum anchorstamp-observe-audit agentsim demo-report scenarios/*.txt)
@@ -197,9 +237,11 @@ AGENTS_KILLED=0
 OBSERVER_STOPPED=0
 RULES_RESTORED=0
 
-# steps 8, 9 and 10; each runs once
+# steps 8, 9 and 10; each runs once. A second signal must not cut them
+# short, so they run with INT, TERM and HUP ignored.
 cleanup() {
     local rc=$?
+    trap '' INT TERM HUP
     set +e
     if [ "$AGENTS_KILLED" -eq 0 ]; then step8; fi
     if [ "$OBSERVER_STOPPED" -eq 0 ]; then step9; fi
@@ -208,14 +250,27 @@ cleanup() {
     exit "$rc"
 }
 
+# Kill every process of the measured account, by real uid and by
+# effective uid, until neither finds one; bounded. Never by name.
+kill_agents() {
+    local i left
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        pkill -KILL -U "$AGENT_UID" || true
+        pkill -KILL -u "$AGENT_UID" || true
+        left=$(pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") || true
+        [ -n "$left" ] || return 0
+        sleep 0.2
+    done
+    return 1
+}
+
 step8() {
     AGENTS_KILLED=1
-    local r
-    pkill -KILL -u anchorstamp-agent && r=0 || r=$?
-    log "step 8 pkill -KILL -u anchorstamp-agent rc=$r (1 = none left)"
+    local r left
+    kill_agents && r=0 || r=$?
+    log "step 8 pkill -KILL by uid $AGENT_UID (real and effective) until none left: rc=$r (0 = none left)"
     sleep 2
-    local left
-    left=$(pgrep -u anchorstamp-agent | tr '\n' ' ')
+    left=$( (pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") | sort -u | tr '\n' ' ') || true
     if [ -n "$left" ]; then stop "measured-account processes remain: $left"; fi
     check "agent processes after kill: ${left:-none}"
 }
@@ -226,14 +281,30 @@ step9() {
         log "step 9 no observer started"
         return
     fi
-    if [ "$(awk '/^PPid:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" = "$$" ]; then
+    # $OBS is our unreaped child, so its pid cannot have been reused
+    if kill -0 "$OBS" 2>/dev/null; then
         kill -TERM "$OBS"
+        local n=0
+        while kill -0 "$OBS" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" != Z ]; do
+            n=$((n + 1))
+            if [ "$n" -ge 50 ]; then
+                log "step 9 observer still running 5 s after SIGTERM; SIGKILL"
+                kill -KILL "$OBS"
+                break
+            fi
+            sleep 0.1
+        done
     else
         log "step 9 observer $OBS already gone"
     fi
     wait "$OBS" && OBS_RC=0 || OBS_RC=$?
     log "step 9 observer exit=$OBS_RC (0 = clean stop on SIGTERM)"
     check "observer exit status: $OBS_RC"
+    case "$OBS_RC" in
+    0) ;;
+    1) stop "the observer's stream ended during the run (exit 1): the audit log rotated, shrank or failed" ;;
+    *) stop "the observer exited $OBS_RC" ;;
+    esac
 }
 
 step10() {
@@ -266,13 +337,17 @@ step10() {
 }
 
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
-auditctl -a $RULE64
+# recorded before each add: a signal between the two must not leave a
+# rule nobody deletes (deleting one never added fails and is logged)
 RULES_ADDED="b64"
+auditctl -a $RULE64
 log "step 4 added: -a $RULE64"
-auditctl -a $RULE32
 RULES_ADDED="b64 b32"
+auditctl -a $RULE32
 log "step 4 added: -a $RULE32"
 while IFS= read -r l; do log "  auditctl -l: $l"; done < <(auditctl -l)
 
@@ -299,23 +374,51 @@ ST=/proc/$OBS/status
 [ "$(awk '/^Uid:/{print $2,$3,$4,$5}' "$ST")" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer uids not all $NOBODY"
 [ "$(awk '/^Gid:/{print $2,$3,$4,$5}' "$ST")" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer gids not all $NOBODY"
 [ "$(awk '/^Groups:/{print $2}' "$ST")" = "" ] || die "step 6 observer has supplementary groups"
-# A non-dumpable process's /proc directory is owned by root, whatever its uid.
+# A process whose dumpable value is not 1 has its /proc directory owned
+# by root. That rules out 1 but cannot tell 0 from 2, so it is not the
+# evidence: the evidence is the value the observer read back with
+# PR_GET_DUMPABLE after the drop, which it logs.
 [ "$(stat -c %u:%g "/proc/$OBS")" = "0:0" ] || die "step 6 /proc/$OBS not root-owned: observer is dumpable"
 check "observer pid=$OBS $(grep -E '^(PPid|Uid|Gid|Groups):' "$ST" | tr '\t\n' '  ')"
-check "observer /proc/$OBS owner $(stat -c %u:%g "/proc/$OBS") (0:0 = not dumpable)"
-grep -q 'dropped uid=65534 gid=65534 groups=0 dumpable=0' "$RUN/observer.log" || die "step 6 observer did not log its drop"
+check "observer /proc/$OBS owner $(stat -c %u:%g "/proc/$OBS") (rules out dumpable 1 only; not evidence of 0)"
+grep -qx 'observe-audit: dropped uid=65534 gid=65534 groups=0 dumpable=0' "$RUN/observer.log" || die "step 6 observer did not log dumpable=0 after its drop"
+check "observer read PR_GET_DUMPABLE after the drop: 0 (its log: $(grep -m1 'dropped uid=' "$RUN/observer.log"))"
+SCOPE_LINE=$(grep -m1 -x 'observe-audit: ptrace_scope=[0-9]*' "$RUN/observer.log") || die "step 6 observer did not log ptrace_scope"
+[ "${SCOPE_LINE##*=}" -ge 1 ] || die "step 6 observer reports ptrace_scope below 1"
+check "observer checked ptrace_scope=${SCOPE_LINE##*=} (at least 1)"
 ANCHOR_SHA=$(sha256sum "$RUN/sink/anchor.pub" | cut -d' ' -f1)
 check "anchor sha256 at start $ANCHOR_SHA"
 check "sink at start: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin" "$RUN/sink/anchor.pub" | tr '\n' ';')"
 log "step 6 ok"
 
 # ---- 7 the measured account -------------------------------------------
-set +e
+# The account's execs grow the audit log. A rotation mid-run would end the
+# observer's stream and delete the host's oldest log, so the size is
+# watched and the account killed at 3/4 of max_log_file. The observer
+# ending early is also a stop.
 sudo -n -u "$AGENT" -- setsid -w "$INST/agentsim" "$INST/scenarios/$SCENARIO.txt" "$RUN" \
-    </dev/null >"$RUN/agent.log" 2>&1
-AGENT_RC=$?
-set -e
-log "step 7 agentsim exit=$AGENT_RC"
+    </dev/null >"$RUN/agent.log" 2>&1 &
+AGENT_PID=$!
+log "step 7 agentsim started via sudo pid=$AGENT_PID"
+PEAK=0
+while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/$AGENT_PID/status" 2>/dev/null)" != Z ]; do
+    NOW=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
+    [ "$NOW" -le "$PEAK" ] || PEAK=$NOW
+    if [ "$NOW" -ge "$WATCH_LIMIT" ]; then
+        stop "audit log reached $NOW bytes (3/4 of max_log_file is $WATCH_LIMIT); measured account killed"
+        kill_agents || true
+        break
+    fi
+    if ! kill -0 "$OBS" 2>/dev/null || [ "$(awk '/^State:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" = Z ]; then
+        stop "the observer ended while the measured account ran; measured account killed"
+        kill_agents || true
+        break
+    fi
+    sleep 0.2
+done
+wait "$AGENT_PID" && AGENT_RC=0 || AGENT_RC=$?
+log "step 7 agentsim exit=$AGENT_RC; audit log peak size seen $PEAK of $WATCH_LIMIT"
+check "audit log size during the run: peak $PEAK bytes, stop at $WATCH_LIMIT"
 check "agentsim exit status: $AGENT_RC (3 = a refusal test succeeded)"
 if [ "$AGENT_RC" -eq 3 ]; then stop "a refusal test succeeded"; fi
 
@@ -333,7 +436,7 @@ check "sink at end: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin
 check "sink entries: $(cd "$RUN/sink" && ls -A | tr '\n' ' ')"
 step10
 
-# ---- N-6 leak search ---------------------------------------------------
+# ---- leak search (test build only) -------------------------------------
 if [ "$LEAK" -eq 1 ]; then
     KEYHEX=$(od -An -v -tx1 "$RUN/leak/key.bin" | tr -d ' \n')
     KEYB64=$(base64 -w0 "$RUN/leak/key.bin")
