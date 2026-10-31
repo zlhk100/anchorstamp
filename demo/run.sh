@@ -233,7 +233,10 @@ RULE64="always,exit -F arch=b64 -S execve,execveat -F success=1 -F uid=$AGENT_UI
 RULE32="always,exit -F arch=b32 -S execve,execveat -F success=1 -F uid=$AGENT_UID -k $KEY"
 RULES_ADDED=""
 OBS=""
+OBS_START=""
+OBS_RC=""
 AGENTS_KILLED=0
+AGENTS_REMAIN=0
 OBSERVER_STOPPED=0
 RULES_RESTORED=0
 
@@ -248,6 +251,33 @@ cleanup() {
     if [ "$RULES_RESTORED" -eq 0 ]; then step10; fi
     log "exit rc=$rc stopped=$STOPPED"
     exit "$rc"
+}
+
+# Start time (field 22 of /proc/PID/stat, clock ticks since boot) of
+# PID, or nothing. Fields are counted after the last ')', since the
+# command name may hold spaces or parentheses.
+start_time() {
+    local s rest
+    s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    rest=${s##*) }
+    set -- $rest
+    [ $# -ge 20 ] || return 1
+    printf '%s' "${20}"
+}
+
+# Whether $OBS is still the process run.sh started: our child (PPid) with
+# the start time recorded at launch. bash reaps a background child as soon
+# as it exits, so after that the pid may name another process; without
+# both matches no signal is sent.
+obs_is_ours() {
+    [ -n "$OBS" ] && [ -n "$OBS_START" ] || return 1
+    [ "$(awk '/^PPid:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" = "$$" ] || return 1
+    [ "$(start_time "$OBS")" = "$OBS_START" ]
+}
+
+# ours and not yet a zombie
+obs_running() {
+    obs_is_ours && [ "$(awk '/^State:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" != Z ]
 }
 
 # Kill every process of the measured account, by real uid and by
@@ -271,7 +301,10 @@ step8() {
     log "step 8 pkill -KILL by uid $AGENT_UID (real and effective) until none left: rc=$r (0 = none left)"
     sleep 2
     left=$( (pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") | sort -u | tr '\n' ' ') || true
-    if [ -n "$left" ]; then stop "measured-account processes remain: $left"; fi
+    if [ -n "$left" ]; then
+        AGENTS_REMAIN=1
+        stop "measured-account processes remain: $left"
+    fi
     check "agent processes after kill: ${left:-none}"
 }
 
@@ -279,24 +312,30 @@ step9() {
     OBSERVER_STOPPED=1
     if [ -z "$OBS" ]; then
         log "step 9 no observer started"
+        check "observer exit status: none (never started)"
         return
     fi
-    # $OBS is our unreaped child, so its pid cannot have been reused
-    if kill -0 "$OBS" 2>/dev/null; then
-        kill -TERM "$OBS"
+    # Each signal only after checking the pid still names our observer.
+    if obs_running; then
+        kill -TERM "$OBS" || true
         local n=0
-        while kill -0 "$OBS" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" != Z ]; do
+        while obs_running; do
             n=$((n + 1))
             if [ "$n" -ge 50 ]; then
-                log "step 9 observer still running 5 s after SIGTERM; SIGKILL"
-                kill -KILL "$OBS"
+                if obs_is_ours; then
+                    log "step 9 observer still running 5 s after SIGTERM; SIGKILL"
+                    kill -KILL "$OBS" || true
+                else
+                    log "step 9 pid $OBS no longer names our observer; no SIGKILL sent"
+                fi
                 break
             fi
             sleep 0.1
         done
     else
-        log "step 9 observer $OBS already gone"
+        log "step 9 observer $OBS already exited (or the pid no longer names it); no signal sent"
     fi
+    # bash keeps the status of a child it reaped early; wait returns it
     wait "$OBS" && OBS_RC=0 || OBS_RC=$?
     log "step 9 observer exit=$OBS_RC (0 = clean stop on SIGTERM)"
     check "observer exit status: $OBS_RC"
@@ -357,20 +396,31 @@ if [ "$LEAK" -eq 1 ]; then
     mkdir -m 0700 "$RUN/leak"
     OBS_ARGS+=(--leak-key-file "$RUN/leak/key.bin")
 fi
+# Launched and its pid and start time captured with INT, TERM and HUP
+# ignored, so no signal can leave an observer cleanup does not know of.
+# The observer installs its own SIGTERM handler, so the ignored
+# disposition it inherits does not stop step 9.
+trap '' INT TERM HUP
 "$INST/anchorstamp-observe-audit" "${OBS_ARGS[@]}" </dev/null 2>"$RUN/observer.log" &
 OBS=$!
-log "step 5 observer started pid=$OBS"
+OBS_START=$(start_time "$OBS") || OBS_START=""
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+log "step 5 observer started pid=$OBS start_time=${OBS_START:-unreadable}"
 
 # ---- 6 the drop, checked before the agent starts -----------------------
 n=0
 while [ "$(stat -c %s "$RUN/sink/anchor.pub" 2>/dev/null || echo 0)" != 32 ]; do
-    kill -0 "$OBS" 2>/dev/null || die "step 6 observer exited before writing its anchor"
+    obs_running || die "step 6 observer exited before writing its anchor"
     n=$((n + 1))
     [ "$n" -lt 100 ] || die "step 6 no anchor after 10 s"
     sleep 0.1
 done
 ST=/proc/$OBS/status
-[ "$(awk '/^PPid:/{print $2}' "$ST")" = "$$" ] || die "step 6 observer is not run.sh's child"
+[ -n "$OBS_START" ] || die "step 6 observer start time was not recorded"
+obs_is_ours || die "step 6 pid $OBS is not run.sh's child with the start time recorded at launch"
+check "observer pid=$OBS start_time=$OBS_START (field 22 of /proc/$OBS/stat; required before every signal)"
 [ "$(awk '/^Uid:/{print $2,$3,$4,$5}' "$ST")" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer uids not all $NOBODY"
 [ "$(awk '/^Gid:/{print $2,$3,$4,$5}' "$ST")" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer gids not all $NOBODY"
 [ "$(awk '/^Groups:/{print $2}' "$ST")" = "" ] || die "step 6 observer has supplementary groups"
@@ -409,7 +459,7 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
         kill_agents || true
         break
     fi
-    if ! kill -0 "$OBS" 2>/dev/null || [ "$(awk '/^State:/{print $2}' "/proc/$OBS/status" 2>/dev/null)" = Z ]; then
+    if ! obs_running; then
         stop "the observer ended while the measured account ran; measured account killed"
         kill_agents || true
         break
@@ -436,22 +486,47 @@ check "sink at end: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin
 check "sink entries: $(cd "$RUN/sink" && ls -A | tr '\n' ' ')"
 step10
 
+# Processes of the measured account still alive: nothing more runs.
+if [ "$AGENTS_REMAIN" -ne 0 ]; then
+    log "STOP: measured-account processes survived the kill rounds; leak search and report skipped"
+    exit 1
+fi
+
 # ---- leak search (test build only) -------------------------------------
+# Only files root wrote: claims/ belongs to the measured account and is
+# not read. Regular files only, never through a symlink, at most
+# LEAK_MAX bytes each; a file over the cap leaves the search incomplete,
+# which is a stop.
+LEAK_MAX=$((64 * 1024 * 1024))
 if [ "$LEAK" -eq 1 ]; then
     KEYHEX=$(od -An -v -tx1 "$RUN/leak/key.bin" | tr -d ' \n')
     KEYB64=$(base64 -w0 "$RUN/leak/key.bin")
     KEYB64NP=${KEYB64%%=*}
     found=0
-    # every file of the run except the export itself, and the harness's own output so far
+    unsearched=0
+    # every root-written file of the run except the export itself
     while IFS= read -r -d '' f; do
         [ "$f" = "$RUN/leak/key.bin" ] && continue
+        if [ ! -f "$f" ] || [ -L "$f" ]; then
+            log "leak search: $f is not a regular file; not read"
+            unsearched=1
+            continue
+        fi
+        if [ "$(stat -c %s -- "$f")" -gt "$LEAK_MAX" ]; then
+            log "leak search: $f is over $LEAK_MAX bytes; not searched"
+            unsearched=1
+            continue
+        fi
         raw=$(od -An -v -tx1 "$f" | tr -d ' \n')
         case "$raw" in *"$KEYHEX"*) log "LEAK raw key bytes in $f"; found=1 ;; esac
         if grep -aqiF -e "$KEYHEX" "$f"; then log "LEAK hex key in $f"; found=1; fi
         if grep -aqF -e "$KEYB64NP" "$f"; then log "LEAK base64 key in $f"; found=1; fi
-    done < <(find "$RUN" -type f -print0)
-    if [ "$found" -eq 0 ]; then
-        check "leak search: key absent (raw, hex lower/upper, base64) from every file of the run"
+    done < <(find "$RUN" -path "$RUN/claims" -prune -o -type f -print0)
+    if [ "$found" -eq 0 ] && [ "$unsearched" -ne 0 ]; then
+        check "leak search: INCOMPLETE - a file could not be searched (see the log)"
+        stop "the leak search could not read every file"
+    elif [ "$found" -eq 0 ]; then
+        check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run (claims/ excluded)"
     else
         check "leak search: KEY FOUND"
         stop "the observer key appears in a run output"
