@@ -1,0 +1,21 @@
+// Generated from the probe lines by an independent regex reader.
+[
+        Expect::Other,
+        Expect::Other,
+        Expect::Exec { time_ms: 1793418742202, serial: 10417, syscall: 59, pid: 600464, ppid: 600463, exe_len: 13, exe_prefix: b"/usr/bin/dash" },
+        Expect::Exec { time_ms: 1793418742203, serial: 10418, syscall: 59, pid: 600465, ppid: 600464, exe_len: 13, exe_prefix: b"/usr/bin/date" },
+        Expect::Exec { time_ms: 1793418742205, serial: 10419, syscall: 59, pid: 600464, ppid: 600463, exe_len: 11, exe_prefix: b"/usr/bin/ls" },
+        Expect::Exec { time_ms: 1793418742214, serial: 10426, syscall: 59, pid: 600468, ppid: 600467, exe_len: 13, exe_prefix: b"/usr/bin/dash" },
+        Expect::Exec { time_ms: 1793418742216, serial: 10427, syscall: 59, pid: 600469, ppid: 600468, exe_len: 13, exe_prefix: b"/usr/bin/date" },
+        Expect::Exec { time_ms: 1793418742216, serial: 10428, syscall: 59, pid: 600468, ppid: 600467, exe_len: 13, exe_prefix: b"/usr/bin/dash" },
+        Expect::Exec { time_ms: 1793418742224, serial: 10435, syscall: 59, pid: 600472, ppid: 600471, exe_len: 13, exe_prefix: b"/usr/bin/dash" },
+        Expect::Exec { time_ms: 1793418742225, serial: 10436, syscall: 59, pid: 600473, ppid: 600472, exe_len: 13, exe_prefix: b"/usr/bin/date" },
+        Expect::Exec { time_ms: 1793418742226, serial: 10437, syscall: 59, pid: 600472, ppid: 600471, exe_len: 28, exe_prefix: b"/tmp/as-probe-600389/a b/q\"x" },
+        Expect::Exec { time_ms: 1793418742235, serial: 10444, syscall: 59, pid: 600476, ppid: 600475, exe_len: 13, exe_prefix: b"/usr/bin/dash" },
+        Expect::Exec { time_ms: 1793418742235, serial: 10445, syscall: 59, pid: 600477, ppid: 600476, exe_len: 13, exe_prefix: b"/usr/bin/date" },
+        Expect::Reject,
+        Expect::Exec { time_ms: 1793418742236, serial: 10446, syscall: 59, pid: 600476, ppid: 600475, exe_len: 1647, exe_prefix: b"/tmp/as-probe-600389/long/dddddddddddddd" },
+        Expect::Exec { time_ms: 1793418742246, serial: 10453, syscall: 59, pid: 600480, ppid: 600479, exe_len: 19, exe_prefix: b"/usr/bin/python3.10" },
+        Expect::Exec { time_ms: 1793418742252, serial: 10454, syscall: 322, pid: 600480, ppid: 600479, exe_len: 13, exe_prefix: b"/usr/bin/true" },
+        Expect::Exec { time_ms: 1793418742261, serial: 10461, syscall: 59, pid: 600483, ppid: 600482, exe_len: 13, exe_prefix: b"/usr/bin/dash" },
+]

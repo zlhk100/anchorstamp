@@ -4,6 +4,7 @@ members = [
     "crates/anchorstamp-core",
     "crates/anchorstamp-verify",
     "crates/anchorstamp",
+    "crates/anchorstamp-observe-audit",
 ]
 
 [workspace.package]

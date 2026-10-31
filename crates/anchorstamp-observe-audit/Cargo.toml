@@ -1,0 +1,19 @@
+[package]
+name = "anchorstamp-observe-audit"
+description = "The observer: turns kernel audit exec records into signed, chained sightings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anchorstamp-core = { path = "../anchorstamp-core" }
+ed25519-dalek = "=3.0.0"
+sha2 = { version = "=0.11.0", default-features = false }
+getrandom = "=0.4.3"
+libc = "=0.2.191"
+
+[features]
+# Test-only build: exports the signing key to a root-only 0400 file so a
+# leak search has something to look for. Never enable for a real run.
+leak-test = []
