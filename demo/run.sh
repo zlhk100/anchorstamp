@@ -253,6 +253,19 @@ cleanup() {
     exit "$rc"
 }
 
+# "root-owned" when /proc/PID/status is owned 0:0, else "not root-owned"
+# (also when it cannot be read). When a process's dumpable value is not 1
+# the kernel gives the entries inside /proc/PID to root; the /proc/PID
+# directory itself keeps the process's owner, so it shows nothing. A
+# root-owned status rules out dumpable 1 only: it cannot tell 0 from 2.
+proc_status_owner() {
+    if [ "$(stat -c %u:%g "/proc/$1/status" 2>/dev/null)" = "0:0" ]; then
+        echo "root-owned"
+    else
+        echo "not root-owned"
+    fi
+}
+
 # Start time (field 22 of /proc/PID/stat, clock ticks since boot) of
 # PID, or nothing. Fields are counted after the last ')', since the
 # command name may hold spaces or parentheses.
@@ -421,18 +434,21 @@ ST=/proc/$OBS/status
 [ -n "$OBS_START" ] || die "step 6 observer start time was not recorded"
 obs_is_ours || die "step 6 pid $OBS is not run.sh's child with the start time recorded at launch"
 check "observer pid=$OBS start_time=$OBS_START (field 22 of /proc/$OBS/stat; required before every signal)"
-[ "$(awk '/^Uid:/{print $2,$3,$4,$5}' "$ST")" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer uids not all $NOBODY"
-[ "$(awk '/^Gid:/{print $2,$3,$4,$5}' "$ST")" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer gids not all $NOBODY"
-[ "$(awk '/^Groups:/{print $2}' "$ST")" = "" ] || die "step 6 observer has supplementary groups"
-# A process whose dumpable value is not 1 has its /proc directory owned
-# by root. That rules out 1 but cannot tell 0 from 2, so it is not the
-# evidence: the evidence is the value the observer read back with
-# PR_GET_DUMPABLE after the drop, which it logs.
-[ "$(stat -c %u:%g "/proc/$OBS")" = "0:0" ] || die "step 6 /proc/$OBS not root-owned: observer is dumpable"
-check "observer pid=$OBS $(grep -E '^(PPid|Uid|Gid|Groups):' "$ST" | tr '\t\n' '  ')"
-check "observer /proc/$OBS owner $(stat -c %u:%g "/proc/$OBS") (rules out dumpable 1 only; not evidence of 0)"
+OBS_UIDS=$(awk '/^Uid:/{print $2,$3,$4,$5}' "$ST")
+[ "$OBS_UIDS" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer uids not all $NOBODY: $OBS_UIDS"
+check "observer uids (real effective saved fs): $OBS_UIDS"
+OBS_GIDS=$(awk '/^Gid:/{print $2,$3,$4,$5}' "$ST")
+[ "$OBS_GIDS" = "$NOBODY $NOBODY $NOBODY $NOBODY" ] || die "step 6 observer gids not all $NOBODY: $OBS_GIDS"
+check "observer gids (real effective saved fs): $OBS_GIDS"
+OBS_GROUPS=$(awk '/^Groups:/{$1=""; print}' "$ST" | tr -s ' ')
+[ -z "${OBS_GROUPS# }" ] || die "step 6 observer has supplementary groups:$OBS_GROUPS"
+check "observer supplementary groups: none"
+# Not dumpable: the secondary check rules out dumpable 1; the primary
+# evidence is the observer's own reading, since it exits unless it is 0.
+[ "$(proc_status_owner "$OBS")" = "root-owned" ] || die "step 6 /proc/$OBS/status not root-owned: observer is dumpable 1"
+check "/proc/$OBS/status owned 0:0      rules out dumpable 1 only"
 grep -qx 'observe-audit: dropped uid=65534 gid=65534 groups=0 dumpable=0' "$RUN/observer.log" || die "step 6 observer did not log dumpable=0 after its drop"
-check "observer read PR_GET_DUMPABLE after the drop: 0 (its log: $(grep -m1 'dropped uid=' "$RUN/observer.log"))"
+check "the observer's own line \"dropped uid=65534 gid=65534 groups=0 dumpable=0\" — the primary evidence (it exits unless 0)"
 SCOPE_LINE=$(grep -m1 -x 'observe-audit: ptrace_scope=[0-9]*' "$RUN/observer.log") || die "step 6 observer did not log ptrace_scope"
 [ "${SCOPE_LINE##*=}" -ge 1 ] || die "step 6 observer reports ptrace_scope below 1"
 check "observer checked ptrace_scope=${SCOPE_LINE##*=} (at least 1)"
