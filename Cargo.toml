@@ -14,6 +14,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
+license = "MIT OR Apache-2.0"
 
 # Signature checks dominate test time; optimise dependencies in test builds.
 [profile.dev.package."*"]
