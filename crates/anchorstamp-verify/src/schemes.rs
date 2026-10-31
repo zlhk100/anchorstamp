@@ -1,7 +1,8 @@
 //! The TEST and DEMO schemes.
 
 use anchorstamp_core::{
-    CLASS_COMMAND_EXECUTION, CLASS_INSTANCE_START, SchemeTag, SightingView, SubjectRef,
+    CLASS_COMMAND_EXECUTION, CLASS_INSTANCE_START, CLASS_PARSE_REJECT, SchemeTag, SightingView,
+    SubjectRef,
 };
 
 use crate::{Gap, Instance, Key, Position, Scheme, Stream};
@@ -60,7 +61,9 @@ impl Scheme for Test {
 /// or none when the stream holds more or fewer than one instance.
 ///
 /// The position is a time, so rule 2, rule 5 and gap-touching are read
-/// through sighting times rather than indices.
+/// through sighting times rather than indices. A parse-reject record says
+/// the observer saw a line it could not read; that line could have been an
+/// exec at any time, so it is a hole touching every claim.
 pub struct Demo;
 
 /// A DEMO subject, split.
@@ -190,5 +193,24 @@ impl Scheme for Demo {
         let left = inst.indices_below(gap.from).find_map(|i| self.times_at(inst, i)).map(|t| t.0);
         let right = inst.indices_above(gap.to).find_map(|i| self.times_at(inst, i)).map(|t| t.1);
         left.is_none_or(|l| l <= p.index) && right.is_none_or(|r| p.index <= r)
+    }
+
+    /// The highest cumulative count any valid parse-reject record of the
+    /// instance carries, or the number of such records if that is higher.
+    fn unparsed(&self, inst: &Instance) -> u64 {
+        let mut records = 0;
+        let mut highest = 0;
+        for (_, v) in inst.records() {
+            let p = &v.parts;
+            if p.subject.scheme() == SchemeTag::OBSERVER
+                && p.subject.bytes() == p.seq.instance
+                && p.observed.class == CLASS_PARSE_REJECT
+            {
+                records += 1;
+                let n = p.observed.data.try_into().map(u64::from_be_bytes).unwrap_or(0);
+                highest = highest.max(n);
+            }
+        }
+        highest.max(records)
     }
 }

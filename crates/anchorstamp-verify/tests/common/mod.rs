@@ -3,9 +3,9 @@
 #![allow(dead_code)]
 
 use anchorstamp_core::{
-    CLASS_COMMAND_EXECUTION, CLASS_INSTANCE_START, CLASS_PARSE_REJECT, Coverage, CoverageMode,
-    JOINREF_MAX_LEN, Observed, SIGHTING_MAX_LEN, SchemeTag, Seq, SequenceSource, SightingParts,
-    SubjectRef, encode_joinref, encode_sighting,
+    CLASS_COMMAND_EXECUTION, CLASS_INSTANCE_START, CLASS_PARSE_REJECT, CLASS_STREAM_ENDED,
+    Coverage, CoverageMode, JOINREF_MAX_LEN, Observed, SIGHTING_MAX_LEN, SchemeTag, Seq,
+    SequenceSource, SightingParts, SubjectRef, encode_joinref, encode_sighting,
 };
 use anchorstamp_verify::schemes::DemoSubject;
 use anchorstamp_verify::{chain_digest, key_id};
@@ -32,6 +32,7 @@ pub enum Rec {
     Start(u64),
     Exec { pid: u32, time_ms: u64, exe: u8 },
     Reject(u64),
+    Ended(u8),
 }
 
 pub struct Builder {
@@ -76,6 +77,11 @@ impl Builder {
                 CLASS_PARSE_REJECT,
                 n.to_be_bytes().to_vec(),
             ),
+            Rec::Ended(reason) => (
+                SubjectRef::new(SchemeTag::OBSERVER, &self.instance).unwrap(),
+                CLASS_STREAM_ENDED,
+                vec![reason],
+            ),
         };
         let parts = SightingParts {
             subject,
@@ -115,13 +121,14 @@ pub fn claim(pid: u32, time_ms: u64, exe: u8) -> Vec<u8> {
 }
 
 /// start 1000; execs at 1100 (pid 10, exe A), 1200 (pid 11, exe B); a
-/// parse-reject; 1300 (pid 12, exe A).
+/// control record without a time (a stream-ended record, here mid-stream
+/// only to give a gap an untimed edge); 1300 (pid 12, exe A).
 pub fn standard() -> Builder {
     let mut b = Builder::new(&SECRET, INSTANCE);
     b.push(Rec::Start(1000))
         .push(Rec::Exec { pid: 10, time_ms: 1100, exe: 0xA })
         .push(Rec::Exec { pid: 11, time_ms: 1200, exe: 0xB })
-        .push(Rec::Reject(1))
+        .push(Rec::Ended(3))
         .push(Rec::Exec { pid: 12, time_ms: 1300, exe: 0xA });
     b
 }

@@ -4,7 +4,10 @@ mod common;
 
 use anchorstamp_core::{SchemeTag, Strength};
 use anchorstamp_verify::schemes::Demo;
-use anchorstamp_verify::{Cap, DeclaredPath, Detail, Kind, Outcome, Unclaimed, account, join};
+use anchorstamp_verify::{
+    Cap, DeclaredPath, Detail, Kind, Outcome, Scheme as _, Stream, Unclaimed, account,
+    account_stream, join, join_stream,
+};
 use common::*;
 
 fn run(claim: &[u8], stream: &[&[u8]], anchor: [u8; 32]) -> Outcome {
@@ -65,7 +68,7 @@ fn before_coverage_is_not_covered() {
 fn gap_touches_by_time() {
     let b = standard();
     // drop index 2 (pid 11 at 1200): left edge 1100, right edge is the
-    // parse-reject (untimed), so the next timed record, 1300.
+    // untimed control record, so the next timed record, 1300.
     let mut s = b.refs();
     s.remove(2);
     for (t, touched, kind) in [
@@ -142,7 +145,7 @@ fn account_lists_executions_only() {
     let c = claim(10, 1100, 0xA);
     let got = account(&[&c], &b.refs(), &[b.anchor()], &Demo);
     let u = |index| Unclaimed { instance: INSTANCE, index };
-    // indices 0 (start) and 3 (parse-reject) are control records
+    // indices 0 (start) and 3 (stream-ended) are control records
     assert_eq!(got, vec![u(2), u(4)]);
 }
 
@@ -170,4 +173,52 @@ fn chain_is_intact_and_breaks_are_counted() {
     let o = run(&claim(10, 1100, 0xA), &s, b.anchor());
     assert_eq!(o.health.breaks, 2); // index 2 (bad prev) and index 3 (prev of the original)
     assert_eq!(o.kind, agrees());
+}
+
+#[test]
+fn a_parse_reject_is_a_hole_touching_every_claim() {
+    // an unparsed line could have been any exec at any time: no claim can
+    // be Unobserved while one exists
+    let mut b = standard();
+    b.push(Rec::Reject(1));
+    for t in [1001, 1050, 1150, 1250, 1299] {
+        let o = run(&claim(99, t, 0xA), &b.refs(), b.anchor());
+        assert!(o.health.touches_claim, "time {t}");
+        assert_eq!(o.kind, Kind::NothingToCompare, "time {t}");
+    }
+    // the same claims are Unobserved without it
+    let c = standard();
+    assert_eq!(run(&claim(99, 1050, 0xA), &c.refs(), c.anchor()).kind, UNOBSERVED);
+    // agreement, mismatch and coverage are unchanged by it
+    assert_eq!(run(&claim(10, 1100, 0xA), &b.refs(), b.anchor()).kind, agrees());
+    assert_eq!(run(&claim(10, 1100, 0xB), &b.refs(), b.anchor()).kind, MISMATCH);
+    assert_eq!(
+        run(&claim(10, 999, 0xA), &b.refs(), b.anchor()).kind,
+        Kind::NotCovered { coverage_from: 1000 }
+    );
+    // the count the instance reports is the highest cumulative count
+    let st = Stream::validate(&b.refs(), &[b.anchor()]);
+    assert_eq!(Demo.unparsed(st.instances().next().unwrap()), 1);
+    let mut d = standard();
+    d.push(Rec::Reject(1)).push(Rec::Reject(4));
+    let st = Stream::validate(&d.refs(), &[d.anchor()]);
+    assert_eq!(Demo.unparsed(st.instances().next().unwrap()), 4);
+}
+
+#[test]
+fn validated_once_gives_the_same_outcomes() {
+    let mut b = standard();
+    b.push(Rec::Reject(1));
+    let anchors = [b.anchor()];
+    let refs = b.refs();
+    let st = Stream::validate(&refs, &anchors);
+    let claims = [claim(10, 1100, 0xA), claim(10, 1100, 0xB), claim(99, 1050, 0xA)];
+    for c in &claims {
+        assert_eq!(
+            join_stream(Some(c), &st, DeclaredPath::Direct, &Demo),
+            join(Some(c), &refs, &anchors, DeclaredPath::Direct, &Demo)
+        );
+    }
+    let cs: Vec<&[u8]> = claims.iter().map(Vec::as_slice).collect();
+    assert_eq!(account_stream(&cs, &st, &Demo), account(&cs, &refs, &anchors, &Demo));
 }

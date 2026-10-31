@@ -246,6 +246,12 @@ pub trait Scheme {
     fn touches(&self, p: &Position, gap: &Gap, _inst: &Instance) -> bool {
         gap.from <= p.index && p.index <= gap.to
     }
+
+    /// Records the observer saw and could not parse, each a hole of
+    /// unknown position that touches every claim. None by default.
+    fn unparsed(&self, _inst: &Instance) -> u64 {
+        0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,7 +323,17 @@ pub fn join(
     path: DeclaredPath,
     scheme: &dyn Scheme,
 ) -> Outcome {
-    let st = Stream::validate(stream, anchors);
+    join_stream(claim, &Stream::validate(stream, anchors), path, scheme)
+}
+
+/// `join` over a stream already validated, for a reader answering many
+/// claims against one stream.
+pub fn join_stream(
+    claim: Option<&[u8]>,
+    st: &Stream,
+    path: DeclaredPath,
+    scheme: &dyn Scheme,
+) -> Outcome {
     let mut health = st.health();
     let path = if st.is_empty() {
         Path::NothingArrived
@@ -327,7 +343,7 @@ pub fn join(
             DeclaredPath::Relayed { hops } => Path::Relayed { hops },
         }
     };
-    let kind = judge(claim, &st, scheme, &mut health.touches_claim);
+    let kind = judge(claim, st, scheme, &mut health.touches_claim);
     Outcome { kind, health, path, anchor: Anchor::None }
 }
 
@@ -345,7 +361,7 @@ fn judge(claim: Option<&[u8]>, st: &Stream, scheme: &dyn Scheme, touches: &mut b
     let Some(inst) = st.instance(&p.instance) else {
         return Kind::NothingToCompare;
     };
-    *touches = inst.gaps().iter().any(|g| scheme.touches(&p, g, inst));
+    *touches = scheme.unparsed(inst) > 0 || inst.gaps().iter().any(|g| scheme.touches(&p, g, inst));
 
     if scheme.not_covered(&p, inst) {
         let coverage_from = scheme.coverage_start(inst).unwrap_or_default();
@@ -402,7 +418,11 @@ pub fn account(
     anchors: &[[u8; 32]],
     scheme: &dyn Scheme,
 ) -> Vec<Unclaimed> {
-    let st = Stream::validate(stream, anchors);
+    account_stream(claims, &Stream::validate(stream, anchors), scheme)
+}
+
+/// `account` over a stream already validated.
+pub fn account_stream(claims: &[&[u8]], st: &Stream, scheme: &dyn Scheme) -> Vec<Unclaimed> {
     let derived: Vec<SubjectRef> = claims
         .iter()
         .filter_map(|c| decode_joinref(c).ok())
