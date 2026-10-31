@@ -2,13 +2,15 @@
 //!
 //! Runs as the measured account. Writes join references to
 //! <run-dir>/claims/claims.bin, each preceded by its length (u32
-//! big-endian), and a line per step to stdout. Touches the sink and the
-//! audit system only in the tamper and escalate modes, which must fail.
+//! big-endian), and a line per step to stdout. Looks at the sink only in
+//! the tamper mode, through probes that change nothing, and contacts the
+//! audit system only in the escalate mode, which must fail.
 
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -196,22 +198,41 @@ fn refusal(ctx: &mut Ctx, what: &str, r: io::Result<()>) {
     }
 }
 
+/// Whether this process, by its effective ids, has `mode` access to `p`.
+/// Asks the kernel; opens nothing.
+fn access(p: &Path, mode: libc::c_int) -> io::Result<()> {
+    let c = CString::new(p.as_os_str().as_bytes())?;
+    // SAFETY: a NUL-terminated path and constant flags.
+    if unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), mode, libc::AT_EACCESS) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Whether this process may change the mode of `p`: only its owner, or
+/// root, may. Looked up through an O_PATH descriptor, which grants no
+/// access to the file.
+fn may_chmod(p: &Path) -> io::Result<()> {
+    let f = OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW).open(p)?;
+    let owner = std::os::unix::fs::MetadataExt::uid(&f.metadata()?);
+    // SAFETY: geteuid has no arguments and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    if me == 0 || me == owner { Ok(()) } else { Err(io::ErrorKind::PermissionDenied.into()) }
+}
+
+/// Probe whether the measured account could write the sink or the anchor,
+/// create or rename in the sink directory, or change the sink's mode.
+/// Every probe asks and none acts: if a permission ever regressed, the
+/// probe reports it and nothing in the sink changes.
 fn tamper(ctx: &mut Ctx) {
     let sink = ctx.run_dir.join("sink");
     let s = sink.join("sightings.bin");
     let a = sink.join("anchor.pub");
-    // Each attempt only opens or renames; nothing is written even if an
-    // attempt were to succeed.
-    let r = OpenOptions::new().append(true).open(&s).map(drop);
-    refusal(ctx, "tamper open-append sink/sightings.bin", r);
-    let r = OpenOptions::new().write(true).open(&a).map(drop);
-    refusal(ctx, "tamper open-write sink/anchor.pub", r);
-    let r = OpenOptions::new().write(true).create_new(true).open(sink.join("injected")).map(drop);
-    refusal(ctx, "tamper create sink/injected", r);
-    let r = std::fs::rename(&a, sink.join("anchor.moved"));
-    refusal(ctx, "tamper rename sink/anchor.pub", r);
-    let r = std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o666));
-    refusal(ctx, "tamper chmod sink/sightings.bin", r);
+    refusal(ctx, "tamper probe write sink/sightings.bin", access(&s, libc::W_OK));
+    refusal(ctx, "tamper probe write sink/anchor.pub", access(&a, libc::W_OK));
+    refusal(ctx, "tamper probe create or rename in sink/", access(&sink, libc::W_OK | libc::X_OK));
+    refusal(ctx, "tamper probe chmod sink/sightings.bin", may_chmod(&s));
 }
 
 /// AUDIT_SET asking for `enabled = 1`, which audit already is: refused or

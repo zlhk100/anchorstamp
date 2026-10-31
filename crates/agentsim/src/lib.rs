@@ -6,6 +6,22 @@
 //! Blank lines and lines starting with `#` are ignored. Arguments are split
 //! on spaces; single quotes group words.
 
+/// Most execs one scenario may start. The measured account's execs grow
+/// the audit log, and a log that rotates mid-run blinds the observer.
+pub const EXEC_CAP: u32 = 500;
+
+impl Step {
+    /// Execs the step starts itself. A pipeline's shell may start more.
+    pub fn execs(&self) -> u32 {
+        match self {
+            Step::Burst { n, .. } => *n,
+            Step::ForgeMismatch { .. } => 2,
+            Step::Tamper { .. } => 0,
+            _ => 1,
+        }
+    }
+}
+
 /// One scenario step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -32,7 +48,8 @@ pub enum Step {
     /// Copy a binary under a path longer than the observed data holds and
     /// run it through the library.
     Longpath { agent: String, path: String },
-    /// Try to write the sink and the anchor. Every attempt must fail.
+    /// Probe, without acting, whether the sink and the anchor could be
+    /// written. Every probe must say no.
     Tamper { agent: String },
     /// Try `sudo -n true` and a raw-netlink AUDIT_SET. Both must fail.
     Escalate { agent: String },
@@ -71,7 +88,8 @@ pub fn words(line: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Parse a scenario. Any unknown step is an error naming its line.
+/// Parse a scenario. Any unknown step is an error naming its line; a
+/// scenario that would start more than `EXEC_CAP` execs is an error.
 pub fn parse(text: &str) -> Result<Vec<Step>, String> {
     let mut steps = Vec::new();
     for (n, raw) in text.lines().enumerate() {
@@ -136,6 +154,10 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             m => return Err(at(&format!("unknown mode {m:?}"))),
         };
         steps.push(step);
+    }
+    let total = steps.iter().try_fold(0u32, |t, s| t.checked_add(s.execs()));
+    if total.is_none_or(|t| t > EXEC_CAP) {
+        return Err(format!("scenario starts more than {EXEC_CAP} execs"));
     }
     Ok(steps)
 }
