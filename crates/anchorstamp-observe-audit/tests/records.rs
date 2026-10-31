@@ -31,6 +31,7 @@ fn records_decode_chain_and_verify() {
         pid: 600476,
         ppid: 600475,
         exe: vec![b'd'; 1647],
+        line_truncated: false,
     };
     let recs = [
         c.instance_start(1_793_418_742_000),

@@ -7,12 +7,13 @@
 //! twice: verbatim as cut (a reject), and rebuilt with the full path,
 //! which the same run recorded in that exec's EXECVE record.
 
-use anchorstamp_observe_audit::parse::{
-    Arch, EXE_DATA_MAX, LINE_MAX, Line, LineBuf, classify, exec_data,
-};
+mod common;
 
-const KEY: &[u8] = b"as-probe-600389";
-const PROBE: &[u8] = include_bytes!("data/probe-syscall.txt");
+use anchorstamp_observe_audit::parse::{
+    Arch, EXE_DATA_MAX, FLAG_EXE_TRUNCATED, FLAG_LINE_TRUNCATED, LINE_MAX, Line, LineBuf, classify,
+    exec_data,
+};
+use common::{KEY, probe};
 
 enum Expect {
     Exec {
@@ -37,7 +38,7 @@ fn lines(data: &[u8]) -> Vec<(Vec<u8>, bool)> {
 #[test]
 fn probe_lines() {
     let expect: Vec<Expect> = include!("data/probe-expect.rs").into_iter().collect();
-    let got = lines(PROBE);
+    let got = lines(&probe());
     assert_eq!(got.len(), 18);
     assert_eq!(got.len(), expect.len());
     let mut execs = 0;
@@ -67,14 +68,14 @@ fn probe_lines() {
 
 #[test]
 fn hex_exe_is_decoded() {
-    let got = lines(PROBE);
+    let got = lines(&probe());
     let Line::Exec(e) = classify(&got[10].0, false, KEY) else { panic!() };
     assert_eq!(e.exe, b"/tmp/as-probe-600389/a b/q\"x");
 }
 
 #[test]
 fn execveat_is_sighted() {
-    let got = lines(PROBE);
+    let got = lines(&probe());
     let Line::Exec(e) = classify(&got[16].0, false, KEY) else { panic!() };
     assert_eq!(e.syscall, 322);
     assert_eq!(e.exe, b"/usr/bin/true");
@@ -82,11 +83,11 @@ fn execveat_is_sighted() {
 
 #[test]
 fn long_path_is_truncated_and_flagged_never_skipped() {
-    let got = lines(PROBE);
+    let got = lines(&probe());
     let Line::Exec(e) = classify(&got[14].0, false, KEY) else { panic!() };
     assert_eq!(e.exe.len(), 1647);
     let d = exec_data(&e);
-    assert_eq!(d[0] & 1, 1, "truncated flag");
+    assert_eq!(d[0], FLAG_EXE_TRUNCATED, "path truncated, line whole");
     assert_eq!(u32::from_be_bytes(d[1..5].try_into().unwrap()), e.ppid);
     assert_eq!(d.len(), 5 + EXE_DATA_MAX);
     assert_eq!(&d[5..], &e.exe[..EXE_DATA_MAX]);
@@ -99,13 +100,13 @@ fn long_path_is_truncated_and_flagged_never_skipped() {
 fn ppid_before_pid_is_matched_by_whole_key() {
     // every real line has ppid= before pid=; a substring match would read
     // ppid as pid
-    let got = lines(PROBE);
+    let got = lines(&probe());
     let Line::Exec(e) = classify(&got[3].0, false, KEY) else { panic!() };
     assert_eq!((e.ppid, e.pid), (600464, 600465));
 }
 
 fn base() -> Vec<u8> {
-    lines(PROBE)[2].0.clone()
+    lines(&probe())[2].0.clone()
 }
 
 fn with(f: impl Fn(&str) -> String) -> Vec<u8> {
@@ -121,6 +122,32 @@ fn duplicate_key_is_rejected() {
     let l = with(|k| k.replace(" pid=600464", " pid=600464 pid=1"));
     assert_eq!(classify(&l, false, KEY), Line::Reject);
     let l = with(|k| format!("{k} exe=\"/usr/bin/true\""));
+    assert_eq!(classify(&l, false, KEY), Line::Reject);
+    // the record type and the timestamp are keys too
+    let l = with(|k| format!("{k} type=EXECVE"));
+    assert_eq!(classify(&l, false, KEY), Line::Reject);
+    let l = with(|k| format!("{k} msg=audit(1.000:1):"));
+    assert_eq!(classify(&l, false, KEY), Line::Reject);
+}
+
+#[test]
+fn label_tokens_after_subj_are_skipped() {
+    // an AppArmor profile name holding a space, as policy writes it
+    let l = with(|k| k.replace("subj=unconfined", "subj=/usr/bin/man (enforce)"));
+    let Line::Exec(e) = classify(&l, false, KEY) else { panic!("label line not sighted") };
+    assert_eq!((e.pid, e.exe.as_slice()), (600464, &b"/usr/bin/dash"[..]));
+    let l = with(|k| k.replace("subj=unconfined", "subj=snap.x.y (complain) (more)"));
+    assert!(matches!(classify(&l, false, KEY), Line::Exec(_)));
+    // only directly after subj=: elsewhere a bare token is still a reject
+    let l = with(|k| {
+        k.replace("subj=unconfined", "subj=unconfined (enforce)")
+            .replace(" items=2", " items=2 stray")
+    });
+    assert_eq!(classify(&l, false, KEY), Line::Reject);
+    let l = with(|k| k.replace(" tty=pts4", " tty=pts4 (enforce)"));
+    assert_eq!(classify(&l, false, KEY), Line::Reject);
+    // an empty token after subj= is not a label part
+    let l = with(|k| k.replace("subj=unconfined", "subj=unconfined "));
     assert_eq!(classify(&l, false, KEY), Line::Reject);
 }
 
@@ -223,11 +250,34 @@ fn overlong_lines() {
     assert!(got[0].1, "truncated");
     assert_eq!(got[0].0.len(), LINE_MAX);
     assert!(matches!(classify(&got[0].0, got[0].1, KEY), Line::Exec(_)));
-    // kernel part cut by the limit: rejected, counted, not dropped
+    // kernel part cut by the limit before the fields that make it ours:
+    // rejected, counted, not dropped
     let k = with(|k| k.replace("a3=0", &format!("a3={}", "0".repeat(2 * LINE_MAX))));
     let mut l = k.clone();
     l.push(b'\n');
     let got = lines(&l);
     assert!(got[0].1);
     assert_eq!(classify(&got[0].0, got[0].1, KEY), Line::Reject);
+
+    // no 0x1D and cut after the key: sighted, flagged as cut, the partial
+    // last token dropped
+    let b = base();
+    let kernel = &b[..b.iter().position(|&c| c == 0x1d).unwrap()];
+    let mut l = kernel.to_vec();
+    l.extend_from_slice(b" ");
+    l.extend(std::iter::repeat_n(b'z', 2 * LINE_MAX));
+    l.push(b'\n');
+    let got = lines(&l);
+    assert!(got[0].1);
+    let Line::Exec(e) = classify(&got[0].0, got[0].1, KEY) else { panic!("cut line not sighted") };
+    assert!(e.line_truncated);
+    assert_eq!((e.pid, e.exe.as_slice()), (600464, &b"/usr/bin/dash"[..]));
+    assert_eq!(exec_data(&e)[0], FLAG_LINE_TRUNCATED);
+    // the same line not cut: the bare token is a reject
+    let mut whole = kernel.to_vec();
+    whole.extend_from_slice(b" zzzz");
+    assert_eq!(classify(&whole, false, KEY), Line::Reject);
+    // cut inside the key itself: the key token is dropped, so it is not ours
+    let cut = &kernel[..kernel.len() - 3];
+    assert_eq!(classify(cut, true, KEY), Line::Reject);
 }

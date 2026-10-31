@@ -17,6 +17,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anchorstamp_core::{ENDED_READ_ERROR, ENDED_ROTATED, ENDED_SHRUNK};
 use anchorstamp_observe_audit::emit::{Chain, frame};
+use anchorstamp_observe_audit::msg;
 use anchorstamp_observe_audit::parse::{Line, LineBuf, classify};
 use ed25519_dalek::SigningKey;
 
@@ -36,11 +37,11 @@ extern "C" fn on_term(_: libc::c_int) {
 }
 
 fn log(event: &str) {
-    eprintln!("observe-audit: {event}");
+    eprintln!("{}{event}", msg::PREFIX);
 }
 
 fn fail(code: i32, what: &str) -> ! {
-    log(&format!("error {what}"));
+    log(&msg::error(what));
     exit(code)
 }
 
@@ -53,7 +54,7 @@ struct Args {
 }
 
 fn args() -> Args {
-    let usage = "usage: anchorstamp-observe-audit --audit-log PATH --sink DIR --key KEY";
+    let usage = msg::USAGE;
     let mut audit_log = None;
     let mut sink = None;
     let mut key = None;
@@ -116,6 +117,20 @@ fn zero(buf: &mut [u8]) {
     }
 }
 
+/// Yama's ptrace scope must be at least 1 (only a parent may attach), so a
+/// process of the measured account cannot attach to the observer. Read
+/// and logged before the key exists.
+fn check_ptrace_scope() {
+    let scope = std::fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or_else(|| fail(EXIT_START, "ptrace_scope unreadable"));
+    log(&msg::ptrace_scope(scope));
+    if scope < 1 {
+        fail(EXIT_START, "ptrace_scope below 1");
+    }
+}
+
 /// setgroups(0), setresgid and setresuid to nobody; then dumpable 0,
 /// asserted, and the ids and groups asserted. Any failure ends the start
 /// before the public key is written.
@@ -151,8 +166,8 @@ fn drop_privilege() {
         if libc::getgroups(0, std::ptr::null_mut()) != 0 {
             fail(EXIT_START, "supplementary groups remain after the drop");
         }
+        log(&msg::dropped(dumpable));
     }
-    log("dropped uid=65534 gid=65534 groups=0 dumpable=0");
 }
 
 /// What the audit descriptor currently names. Rotation renames the file,
@@ -203,23 +218,18 @@ impl Observer<'_> {
                 let rec = match l {
                     Line::Exec(e) => {
                         self.execs += 1;
-                        log(&format!(
-                            "sighting index={} pid={} ppid={} syscall={} exe_len={}",
+                        log(&msg::sighting(
                             self.chain.next_index(),
                             e.pid,
                             e.ppid,
                             e.syscall,
-                            e.exe.len()
+                            e.exe.len(),
                         ));
                         self.chain.exec(&e)
                     }
                     _ => {
                         self.rejects += 1;
-                        log(&format!(
-                            "parse-reject index={} count={}",
-                            self.chain.next_index(),
-                            self.rejects
-                        ));
+                        log(&msg::parse_reject(self.chain.next_index(), self.rejects));
                         self.chain.parse_reject(self.rejects)
                     }
                 };
@@ -231,10 +241,7 @@ impl Observer<'_> {
     fn end(&mut self, reason: u8, why: &str) -> ! {
         let rec = self.chain.stream_ended(reason);
         self.write(&rec);
-        log(&format!(
-            "stream-ended reason={reason} ({why}) execs={} rejects={} offset={}",
-            self.execs, self.rejects, self.offset
-        ));
+        log(&msg::stream_ended(reason, why, self.execs, self.rejects, self.offset));
         exit(EXIT_STREAM_ENDED)
     }
 
@@ -253,13 +260,7 @@ impl Observer<'_> {
                 self.end(ENDED_ROTATED, "log renamed or removed");
             }
             if stopping {
-                log(&format!(
-                    "stopped on SIGTERM execs={} rejects={} pending_bytes={} offset={}",
-                    self.execs,
-                    self.rejects,
-                    self.lines.pending(),
-                    self.offset
-                ));
+                log(&msg::stopped(self.execs, self.rejects, self.lines.pending(), self.offset));
                 exit(0)
             }
             std::thread::sleep(POLL);
@@ -292,6 +293,8 @@ fn main() {
     let mut sink = create_exclusive(&a.sink.join("sightings.bin"), 0o644);
     let mut anchor = create_exclusive(&a.sink.join("anchor.pub"), 0o644);
 
+    check_ptrace_scope();
+
     // 4, 5  key and instance id from the kernel's random source; the seed
     // and the key live in locked heap memory
     let mut seed = Box::new([0u8; 32]);
@@ -317,13 +320,11 @@ fn main() {
         if f.write_all(&seed[..]).is_err() {
             fail(EXIT_START, "leak-test export failed");
         }
-        log("LEAK-TEST BUILD: key exported for the leak search");
+        log(msg::LEAK_TEST);
     }
     zero(&mut seed[..]);
     let instance_hex: String = instance.iter().map(|b| format!("{b:02x}")).collect();
-    log(&format!(
-        "start instance={instance_hex} coverage_from_ms={coverage_from_ms} offset={offset}"
-    ));
+    log(&msg::start(&instance_hex, coverage_from_ms, offset));
 
     // 6, 7, 8  drop, dumpable 0, verify
     drop_privilege();
@@ -341,7 +342,7 @@ fn main() {
         fail(EXIT_START, "anchor write failed");
     }
     drop(anchor);
-    log("anchor written; reading");
+    log(msg::ANCHOR_WRITTEN);
 
     // 10  the read loop
     Observer {

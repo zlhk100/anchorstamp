@@ -7,4 +7,5 @@
 //! tested without privilege; the start sequence is in the binary.
 
 pub mod emit;
+pub mod msg;
 pub mod parse;
