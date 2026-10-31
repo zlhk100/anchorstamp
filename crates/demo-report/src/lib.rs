@@ -6,15 +6,19 @@
 //! statements are printed on every report.
 
 use std::fmt::Write as _;
+use std::fs::OpenOptions;
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use anchorstamp_core::{
-    CLASS_PARSE_REJECT, CLASS_STREAM_ENDED, ENDED_READ_ERROR, ENDED_ROTATED, ENDED_SHRUNK,
-    SchemeTag, SightingView, decode_joinref,
+    CLASS_STREAM_ENDED, ENDED_READ_ERROR, ENDED_ROTATED, ENDED_SHRUNK, SchemeTag, SightingView,
+    decode_joinref,
 };
 use anchorstamp_verify::schemes::{Demo, DemoSubject};
 use anchorstamp_verify::{
-    Cap, DeclaredPath, Detail, Kind, Outcome, Path as Delivery, Stream, account, join,
+    Cap, DeclaredPath, Detail, Kind, Outcome, Path as Delivery, Scheme as _, Stream,
+    account_stream, join_stream,
 };
 
 /// Largest record length a frame may declare.
@@ -61,23 +65,65 @@ pub struct Inputs {
     pub anchor: Option<[u8; 32]>,
     pub claims: Vec<u8>,
     pub harness: Harness,
+    /// Input files that were not read whole, and why.
+    pub notes: Vec<String>,
+}
+
+/// Most bytes read from any one input file.
+pub const READ_MAX: u64 = 64 * 1024 * 1024;
+
+// Open flags, by value: this crate takes no system-interface crate. These
+// are the x86 Linux values.
+#[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "x86"))))]
+compile_error!("open flag values are given for x86 Linux only");
+const O_NONBLOCK: i32 = 0o4000;
+const O_NOFOLLOW: i32 = 0o400000;
+
+/// Read one file of the run directory. Part of it is writable by the
+/// measured account, so: never through a symlink, never waiting on a FIFO,
+/// regular files only, at most `READ_MAX` bytes. `None` when absent or
+/// refused; a refusal or a cut is noted.
+pub fn read_input(path: &Path, notes: &mut Vec<String>) -> Option<Vec<u8>> {
+    let name = path.display();
+    let f = match OpenOptions::new().read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(_) => {
+            notes.push(format!("{name}: not opened (a symlink, or not readable)"));
+            return None;
+        }
+    };
+    if !f.metadata().is_ok_and(|m| m.file_type().is_file()) {
+        notes.push(format!("{name}: not a regular file, not read"));
+        return None;
+    }
+    let mut b = Vec::new();
+    if f.take(READ_MAX + 1).read_to_end(&mut b).is_err() {
+        notes.push(format!("{name}: read failed"));
+        return None;
+    }
+    if b.len() as u64 > READ_MAX {
+        b.truncate(READ_MAX as usize);
+        notes.push(format!("{name}: larger than {READ_MAX} bytes, only the first {READ_MAX} read"));
+    }
+    Some(b)
 }
 
 impl Inputs {
     pub fn read(run: &Path) -> Inputs {
-        let rd = |p: &str| std::fs::read(run.join(p)).ok();
-        let txt = |p: &str| std::fs::read_to_string(run.join(p)).ok();
-        Inputs {
-            sightings: rd("sink/sightings.bin").unwrap_or_default(),
-            anchor: rd("sink/anchor.pub").and_then(|b| b.try_into().ok()),
-            claims: rd("claims/claims.bin").unwrap_or_default(),
-            harness: Harness {
-                audit_before: txt("audit-status-before.txt"),
-                audit_after: txt("audit-status-after.txt"),
-                agent_log: txt("agent.log"),
-                checks: txt("harness-checks.txt"),
-            },
-        }
+        let mut notes = Vec::new();
+        let mut rd = |p: &str| read_input(&run.join(p), &mut notes);
+        let sightings = rd("sink/sightings.bin").unwrap_or_default();
+        let anchor = rd("sink/anchor.pub").and_then(|b| b.try_into().ok());
+        let claims = rd("claims/claims.bin").unwrap_or_default();
+        let mut txt = |p: &str| rd(p).map(|b| String::from_utf8_lossy(&b).into_owned());
+        let harness = Harness {
+            audit_before: txt("audit-status-before.txt"),
+            audit_after: txt("audit-status-after.txt"),
+            agent_log: txt("agent.log"),
+            checks: txt("harness-checks.txt"),
+        };
+        Inputs { sightings, anchor, claims, harness, notes }
     }
 }
 
@@ -116,6 +162,7 @@ struct Seen {
     ppid: u32,
     exe: Vec<u8>,
     truncated: bool,
+    line_cut: bool,
 }
 
 fn seen(index: u64, v: &SightingView) -> Option<Seen> {
@@ -130,12 +177,14 @@ fn seen(index: u64, v: &SightingView) -> Option<Seen> {
         ppid: u32::from_be_bytes(d[1..5].try_into().ok()?),
         exe: d[5..].to_vec(),
         truncated: d[0] & 1 == 1,
+        line_cut: d[0] & 2 == 2,
     })
 }
 
 fn exe_text(s: &Seen) -> String {
     let t = if s.truncated { " [path truncated in the record]" } else { "" };
-    format!("{}{t}", escape(&s.exe))
+    let l = if s.line_cut { " [audit line cut at the length limit]" } else { "" };
+    format!("{}{t}{l}", escape(&s.exe))
 }
 
 fn cap_words(c: &Cap) -> &'static str {
@@ -147,7 +196,8 @@ fn cap_words(c: &Cap) -> &'static str {
     }
 }
 
-fn verdict_words(o: &Outcome) -> String {
+/// `unparsed`: audit lines the observer could not parse, stream-wide.
+fn verdict_words(o: &Outcome, unparsed: u64) -> String {
     match &o.kind {
         Kind::Agrees { strength, caps, .. } => {
             let caps: Vec<&str> = caps.iter().map(cap_words).collect();
@@ -172,11 +222,17 @@ fn verdict_words(o: &Outcome) -> String {
         }
         Kind::NothingToCompare => {
             let why = if o.path == Delivery::NothingArrived {
-                "no valid sighting arrived"
+                "no valid sighting arrived".to_string()
+            } else if o.health.touches_claim && unparsed > 0 {
+                format!(
+                    "the record holds {unparsed} audit line(s) the observer could not parse, \
+                     any of which may be this exec"
+                )
             } else if o.health.touches_claim {
-                "a gap in the record touches the claim's time"
+                "a gap in the record touches the claim's time".to_string()
             } else {
                 "the record does not reach far enough, or does not identify one observer instance"
+                    .to_string()
             };
             format!("NOTHING TO COMPARE - {why}.")
         }
@@ -210,6 +266,9 @@ pub fn render(run_label: &str, input: &Inputs) -> String {
     if input.anchor.is_none() {
         let _ = writeln!(r, "anchor: MISSING or not 32 bytes - no record can be validated.");
     }
+    for n in &input.notes {
+        let _ = writeln!(r, "input file {}", escape_line(n));
+    }
 
     // stream health
     let _ = writeln!(r, "\nstream health");
@@ -233,32 +292,26 @@ pub fn render(run_label: &str, input: &Inputs) -> String {
         let _ = writeln!(r, "  claims file unreadable after record {n}");
     }
     let mut execs: Vec<Seen> = Vec::new();
+    let mut unparsed = 0u64;
     for inst in st.instances() {
+        unparsed += scheme.unparsed(inst);
         if let Some(ms) = scheme.coverage_from_ms(inst) {
             let _ = writeln!(r, "  coverage: mode Mediated, from {ms} ms (self-declared)");
         } else {
             let _ = writeln!(r, "  coverage: start record missing");
         }
-        let mut rejects = 0u64;
         let mut ended = None;
         for (index, v) in inst.records() {
             let p = &v.parts;
             if p.subject.scheme() == SchemeTag::OBSERVER {
-                match p.observed.class {
-                    CLASS_PARSE_REJECT => {
-                        let n = p.observed.data.try_into().map(u64::from_be_bytes).unwrap_or(0);
-                        rejects = rejects.max(n);
-                    }
-                    CLASS_STREAM_ENDED => ended = p.observed.data.first().copied(),
-                    _ => {}
+                if p.observed.class == CLASS_STREAM_ENDED {
+                    ended = p.observed.data.first().copied();
                 }
-            } else if let Some(s) =
-                seen(index, v).filter(|_| anchorstamp_verify::Scheme::is_execution(&scheme, v))
-            {
+            } else if let Some(s) = seen(index, v).filter(|_| scheme.is_execution(v)) {
                 execs.push(s);
             }
         }
-        let _ = writeln!(r, "  parse rejects {rejects}");
+        let _ = writeln!(r, "  parse rejects {}", scheme.unparsed(inst));
         let _ = writeln!(
             r,
             "  stream ended: {}",
@@ -277,10 +330,10 @@ pub fn render(run_label: &str, input: &Inputs) -> String {
     let _ = writeln!(r, "\nclaims ({})", cf.records.len());
     let mut parents: Vec<(usize, &Seen)> = Vec::new();
     for (n, c) in cf.records.iter().enumerate() {
-        let o = join(Some(c), &sf.records, &anchors, DeclaredPath::Direct, &scheme);
+        let o = join_stream(Some(c), &st, DeclaredPath::Direct, &scheme);
         let subj = decode_joinref(c).ok().and_then(|s| DemoSubject::parse(&s));
         let pid = subj.map(|s| s.pid.to_string()).unwrap_or_else(|| "?".into());
-        let _ = writeln!(r, "  #{} pid {pid}  {}", n + 1, verdict_words(&o));
+        let _ = writeln!(r, "  #{} pid {pid}  {}", n + 1, verdict_words(&o, unparsed));
         if let Some(s) = subj {
             let same_pid: Vec<&Seen> = execs.iter().filter(|e| e.subject.pid == s.pid).collect();
             for e in &same_pid {
@@ -298,14 +351,19 @@ pub fn render(run_label: &str, input: &Inputs) -> String {
             }
         }
         let h = o.health;
-        if h.touches_claim {
+        if h.touches_claim && unparsed > 0 {
+            let _ = writeln!(r, "      unparsed audit lines touch this claim");
+        } else if h.touches_claim {
             let _ = writeln!(r, "      a gap touches this claim");
         }
     }
 
     // unclaimed
-    let unclaimed = account(&cf.records, &sf.records, &anchors, &scheme);
+    let unclaimed = account_stream(&cf.records, &st, &scheme);
     let _ = writeln!(r, "\nunclaimed execs ({})", unclaimed.len());
+    if unparsed > 0 {
+        let _ = writeln!(r, "  unclaimed list incomplete: {unparsed} records unparsed");
+    }
     let mut children: Vec<String> = Vec::new();
     let mut others: Vec<String> = Vec::new();
     for u in &unclaimed {

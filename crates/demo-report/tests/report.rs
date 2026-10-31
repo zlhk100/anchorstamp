@@ -17,6 +17,7 @@ fn exec(pid: u32, ppid: u32, time_ms: u64, exe: &str) -> Exec {
         pid,
         ppid,
         exe: exe.as_bytes().to_vec(),
+        line_truncated: false,
     }
 }
 
@@ -43,7 +44,6 @@ fn fixture() -> Inputs {
     s.extend(frame(&c.exec(&exec(101, 100, 1101, "/usr/bin/ls")))); // child of it
     s.extend(frame(&c.exec(&exec(102, 100, 1099, "/usr/bin/wc")))); // ppid matches, earlier
     s.extend(frame(&c.exec(&exec(200, 1, 1200, "/usr/bin/id")))); // other
-    s.extend(frame(&c.parse_reject(1)));
     s.extend(frame(&c.exec(&exec(300, 1, 1300, &format!("/tmp/{}", "d".repeat(1100)))))); // long
     let mut claims = Vec::new();
     claims.extend(claim(100, 1101, "/usr/bin/dash")); // corroborated (time not compared)
@@ -60,13 +60,38 @@ fn fixture() -> Inputs {
             agent_log: Some("START\nREFUSAL tamper open-append sink/sightings.bin: refused (PermissionDenied)\nCLAIM x\n".into()),
             checks: Some("anchor sha256 unchanged\n".into()),
         },
+        notes: vec![],
     }
+}
+
+/// The fixture's stream with one more record from the same chain.
+fn fixture_plus(add: impl FnOnce(&mut Chain) -> Vec<u8>) -> Inputs {
+    let mut f = fixture();
+    let key = SigningKey::from_bytes(&[0x9d; 32]);
+    // the same chain as the fixture, rebuilt so it can be extended
+    let mut c = Chain::new(&key, [0x11; 16]);
+    let mut s = Vec::new();
+    s.extend(frame(&c.instance_start(1000)));
+    s.extend(frame(&c.exec(&exec(100, 1, 1100, "/usr/bin/dash"))));
+    s.extend(frame(&c.exec(&exec(101, 100, 1101, "/usr/bin/ls"))));
+    s.extend(frame(&c.exec(&exec(102, 100, 1099, "/usr/bin/wc"))));
+    s.extend(frame(&c.exec(&exec(200, 1, 1200, "/usr/bin/id"))));
+    s.extend(frame(&c.exec(&exec(300, 1, 1300, &format!("/tmp/{}", "d".repeat(1100))))));
+    assert_eq!(s, f.sightings, "fixture_plus replays the fixture");
+    s.extend(frame(&add(&mut c)));
+    f.sightings = s;
+    f
 }
 
 #[test]
 fn statements_always_printed() {
-    let empty =
-        Inputs { sightings: vec![], anchor: None, claims: vec![], harness: Harness::default() };
+    let empty = Inputs {
+        sightings: vec![],
+        anchor: None,
+        claims: vec![],
+        harness: Harness::default(),
+        notes: vec![],
+    };
     for r in [render("fixture", &fixture()), render("empty", &empty)] {
         for s in [
             TRUNCATION_WINDOW,
@@ -113,9 +138,10 @@ fn grouping_needs_ppid_and_order() {
 #[test]
 fn health_counters_and_refusals() {
     let r = render("fixture", &fixture());
-    assert!(r.contains("valid 7, excluded 0"), "{r}");
+    assert!(r.contains("valid 6, excluded 0"), "{r}");
     assert!(r.contains("gaps 0, chain breaks 0, forks 0"));
-    assert!(r.contains("parse rejects 1"));
+    assert!(r.contains("parse rejects 0"));
+    assert!(!r.contains("unclaimed list incomplete"));
     assert!(r.contains("coverage: mode Mediated, from 1000 ms (self-declared)"));
     assert!(r.contains("no stream-ended record"));
     assert!(r.contains("lost: before 0, after 0, delta 0"));
@@ -143,7 +169,7 @@ fn tampered_and_cut_streams_are_reported() {
     let mut f = fixture();
     f.sightings.extend_from_slice(&[0, 0, 0xff]);
     let r = render("cut", &f);
-    assert!(r.contains("sightings file unreadable after record 7"), "{r}");
+    assert!(r.contains("sightings file unreadable after record 6"), "{r}");
 }
 
 #[test]
@@ -151,7 +177,7 @@ fn wrong_anchor_validates_nothing() {
     let mut f = fixture();
     f.anchor = Some(SigningKey::from_bytes(&[0x42; 32]).verifying_key().to_bytes());
     let r = render("a", &f);
-    assert!(r.contains("valid 0, excluded 7"), "{r}");
+    assert!(r.contains("valid 0, excluded 6"), "{r}");
     assert!(r.contains("delivery path: nothing arrived"));
     assert!(!r.contains("CORROBORATED"));
 }
@@ -211,4 +237,95 @@ fn framing() {
 fn sample_report() {
     // printed with --nocapture for review of the wording
     eprintln!("{}", render("fixture", &fixture()));
+}
+
+#[test]
+fn an_unparsed_line_makes_the_unclaimed_list_incomplete() {
+    let f = fixture_plus(|c| c.parse_reject(1));
+    let r = render("reject", &f);
+    assert!(r.contains("parse rejects 1"), "{r}");
+    assert!(r.contains("unclaimed list incomplete: 1 records unparsed"), "{r}");
+    // the claim that was Unobserved can no longer be
+    assert!(!r.contains("CONTRADICTED (unobserved)"), "{r}");
+    assert!(
+        r.contains(&format!(
+            "#3 pid {}  NOTHING TO COMPARE - the record holds 1 audit line(s) the observer could \
+             not parse, any of which may be this exec",
+            u32::MAX - 1
+        )),
+        "{r}"
+    );
+    assert!(r.contains("unparsed audit lines touch this claim"));
+    // agreement and mismatch stand
+    assert!(r.contains("#1 pid 100  CORROBORATED"));
+    assert!(r.contains("#2 pid 200  CONTRADICTED (subject mismatch)"));
+}
+
+#[test]
+fn a_cut_audit_line_is_shown() {
+    let f = fixture_plus(|c| {
+        let mut e = exec(400, 1, 1400, "/usr/bin/true");
+        e.line_truncated = true;
+        c.exec(&e)
+    });
+    let r = render("cut", &f);
+    assert!(
+        r.contains(
+            "pid 400 ppid 1 time 1400 exe /usr/bin/true [audit line cut at the length limit]"
+        ),
+        "{r}"
+    );
+}
+
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let d = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("{tag}-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn inputs_never_follow_links_wait_on_fifos_or_read_past_the_cap() {
+    let d = scratch("inputs");
+    let mut notes = Vec::new();
+    // regular file: read
+    std::fs::write(d.join("plain"), b"abc").unwrap();
+    assert_eq!(read_input(&d.join("plain"), &mut notes), Some(b"abc".to_vec()));
+    // absent: nothing, no note
+    assert_eq!(read_input(&d.join("absent"), &mut notes), None);
+    assert!(notes.is_empty());
+    // symlink to a readable file: refused
+    std::os::unix::fs::symlink(d.join("plain"), d.join("link")).unwrap();
+    assert_eq!(read_input(&d.join("link"), &mut notes), None);
+    assert!(notes.last().unwrap().contains("not opened"), "{notes:?}");
+    // FIFO with no writer: refused at once, not waited on
+    let st = std::process::Command::new("mkfifo").arg(d.join("fifo")).status().unwrap();
+    assert!(st.success());
+    assert_eq!(read_input(&d.join("fifo"), &mut notes), None);
+    assert!(notes.last().unwrap().contains("not a regular file"), "{notes:?}");
+    // directory: refused
+    std::fs::create_dir(d.join("dir")).unwrap();
+    assert_eq!(read_input(&d.join("dir"), &mut notes), None);
+    // over the cap: the first READ_MAX bytes only, noted (a sparse file)
+    let big = std::fs::File::create(d.join("big")).unwrap();
+    big.set_len(READ_MAX + 10).unwrap();
+    let got = read_input(&d.join("big"), &mut notes).unwrap();
+    assert_eq!(got.len() as u64, READ_MAX);
+    assert!(notes.last().unwrap().contains("only the first"), "{notes:?}");
+
+    // a run directory whose claims file is a symlink to the real one
+    let run = scratch("run");
+    std::fs::create_dir(run.join("sink")).unwrap();
+    std::fs::create_dir(run.join("claims")).unwrap();
+    let f = fixture();
+    std::fs::write(run.join("sink/sightings.bin"), &f.sightings).unwrap();
+    std::fs::write(run.join("sink/anchor.pub"), f.anchor.unwrap()).unwrap();
+    std::fs::write(run.join("real-claims"), &f.claims).unwrap();
+    std::os::unix::fs::symlink(run.join("real-claims"), run.join("claims/claims.bin")).unwrap();
+    let i = Inputs::read(&run);
+    assert!(i.claims.is_empty());
+    let r = render("linked", &i);
+    assert!(r.contains("claims.bin: not opened"), "{r}");
+    assert!(r.contains("claims (0)"));
 }
