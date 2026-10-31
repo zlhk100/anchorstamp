@@ -8,10 +8,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-mod backed;
 mod wire;
 
-pub use backed::{Backed, Cost, Field, Provenance, provenance};
 pub use wire::{
     DecodeError, EncodeError, decode_joinref, decode_sighting, encode_joinref, encode_sighting,
 };

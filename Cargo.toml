@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/anchorstamp-core",
     "crates/anchorstamp-verify",
+    "crates/anchorstamp",
 ]
 
 [workspace.package]

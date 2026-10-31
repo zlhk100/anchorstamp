@@ -2,7 +2,7 @@
 //! there is no setter and no way for a caller to supply strength,
 //! vantage or backing.
 
-use crate::{Strength, Vantage};
+use anchorstamp_core::{Strength, Vantage};
 
 /// Per-call cost class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +55,6 @@ pub struct Backed<T> {
 }
 
 impl<T> Backed<T> {
-    #[allow(dead_code)]
     pub(crate) fn new(
         result: T,
         strength: Strength,
