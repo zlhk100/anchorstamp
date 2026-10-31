@@ -1,0 +1,3 @@
+# Many claimed execs of one binary in quick succession: raw data on pid
+# reuse. No verdict is drawn from this scenario.
+main burst 200 /usr/bin/true

@@ -1,0 +1,3 @@
+# The measured account tries to write the sink and the anchor.
+main honest /usr/bin/true
+main tamper

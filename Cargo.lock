@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "agentsim"
+version = "0.0.0"
+dependencies = [
+ "anchorstamp",
+ "anchorstamp-core",
+ "libc",
+]
+
+[[package]]
 name = "anchorstamp"
 version = "0.0.0"
 dependencies = [
@@ -92,6 +101,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "demo-report"
+version = "0.0.0"
+dependencies = [
+ "anchorstamp-core",
+ "anchorstamp-observe-audit",
+ "anchorstamp-verify",
+ "ed25519-dalek",
 ]
 
 [[package]]

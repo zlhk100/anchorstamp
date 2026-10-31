@@ -1,0 +1,5 @@
+# A claim for an exec that never happened, and a claim naming the wrong
+# executable for a real process. Each is built from a real claim's digest.
+main honest /usr/bin/true
+main forger unobserved /usr/bin/true
+main forger mismatch /usr/bin/id /usr/bin/true

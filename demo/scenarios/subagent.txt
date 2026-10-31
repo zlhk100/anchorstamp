@@ -1,0 +1,7 @@
+# Sub-agents are threads sharing one library session; their labels are
+# declared by the caller and corroborated by nothing.
+planner honest /usr/bin/true
+coder subagent /usr/bin/ls /
+tester subagent /usr/bin/true
+reviewer subagent /usr/bin/date +%s
+planner honest /usr/bin/true

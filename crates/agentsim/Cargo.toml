@@ -1,0 +1,12 @@
+[package]
+name = "agentsim"
+description = "Deterministic agent-framework simulator: the measured party of the demo."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anchorstamp = { path = "../anchorstamp" }
+anchorstamp-core = { path = "../anchorstamp-core" }
+libc = "=0.2.191"

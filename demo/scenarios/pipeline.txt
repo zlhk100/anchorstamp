@@ -1,0 +1,3 @@
+# One claimed shell whose children are not claimed.
+main pipeline /bin/sh -c '/usr/bin/ls / | /usr/bin/wc -l'
+main pipeline /bin/sh -c '/usr/bin/date; /usr/bin/true'

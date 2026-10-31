@@ -1,0 +1,5 @@
+# Every tool call goes through the library and is claimed.
+main honest /usr/bin/true
+main honest /usr/bin/ls /
+main honest /usr/bin/date +%s
+main honest /bin/sh -c 'exit 3'

@@ -5,6 +5,8 @@ members = [
     "crates/anchorstamp-verify",
     "crates/anchorstamp",
     "crates/anchorstamp-observe-audit",
+    "crates/agentsim",
+    "crates/demo-report",
 ]
 
 [workspace.package]

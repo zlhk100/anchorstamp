@@ -1,0 +1,5 @@
+# Some calls are claimed; others run behind the library's back.
+main honest /usr/bin/true
+main shadow /usr/bin/id
+main honest /usr/bin/ls /
+main shadow /usr/bin/uname -a

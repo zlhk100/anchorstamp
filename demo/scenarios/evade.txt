@@ -1,0 +1,5 @@
+# Execs by routes other than execve, none claimed. The observer must
+# still see each one.
+main honest /usr/bin/true
+main evade execveat /usr/bin/true
+main evade m32

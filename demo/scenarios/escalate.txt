@@ -1,0 +1,3 @@
+# The measured account tries to gain privilege and to change audit.
+main honest /usr/bin/true
+main escalate

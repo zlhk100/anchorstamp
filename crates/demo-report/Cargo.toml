@@ -1,0 +1,16 @@
+[package]
+name = "demo-report"
+description = "Reads a demo run directory and reports what the evidence supports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anchorstamp-core = { path = "../anchorstamp-core" }
+anchorstamp-verify = { path = "../anchorstamp-verify" }
+
+[dev-dependencies]
+# Fixtures are built with the observer's own record builder and a test key.
+anchorstamp-observe-audit = { path = "../anchorstamp-observe-audit" }
+ed25519-dalek = "=3.0.0"

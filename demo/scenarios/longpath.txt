@@ -1,0 +1,2 @@
+# A claimed exec whose path is longer than the observed data holds.
+main longpath /usr/bin/true
