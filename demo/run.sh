@@ -537,7 +537,7 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     MODEL=scripted
     if [ "$LIVE" -eq 1 ]; then MODEL="openai:http://$OLLAMA/v1#$LIVE_MODEL"; fi
     AGENT_CMD=(setsid -w env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
-        /opt/anchorstamp-venv/bin/python -I -B "$INST/agent.py" "$RUN" \
+        "$VENV"/bin/python -I -B "$INST/agent.py" "$RUN" \
         --bridge "$INST/anchorstamp-exec" --model "$MODEL")
 else
     AGENT_NAME=agentsim
