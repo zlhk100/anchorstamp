@@ -257,7 +257,19 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     BAD=$(find "$VENV" ! -type l -perm /022 -print -quit)
     [ -z "$BAD" ] || die "$VENV has an entry writable by group or other: $BAD"
     [ -x "$VENV/bin/python" ] || die "$VENV/bin/python is not executable"
-    log "preflight venv: ok $VENV root:root, nothing group- or other-writable"
+    # every directory above it root's, not a link, writable by root only;
+    # and no setuid or setgid entry in it
+    d=$(dirname "$VENV")
+    while :; do
+        [ ! -L "$d" ] || die "$d (above $VENV) is a symbolic link"
+        [ "$(stat -c '%u:%g' "$d")" = "0:0" ] || die "$d (above $VENV) not owned by root:root"
+        [ -z "$(find "$d" -maxdepth 0 -perm /022)" ] || die "$d (above $VENV) is writable by group or other"
+        [ "$d" != / ] || break
+        d=$(dirname "$d")
+    done
+    BAD=$(find "$VENV" -perm /6000 -print -quit)
+    [ -z "$BAD" ] || die "$VENV has a setuid or setgid entry: $BAD"
+    log "preflight venv: ok $VENV root:root, nothing group- or other-writable, no setuid or setgid; directories above it root's and not group- or other-writable"
     if [ "$LIVE" -eq 1 ]; then
         MODELS=$(sudo -n -u "$SUDO_USER" -- curl -sS --max-time 5 "http://$OLLAMA/v1/models") ||
             die "Ollama does not answer on $OLLAMA"
