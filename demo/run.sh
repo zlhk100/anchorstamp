@@ -619,7 +619,8 @@ log "step 6 ok"
 # ending early is also a stop.
 # The framework: an empty environment but for PATH, LANG and the two
 # Hugging Face switches; the venv's interpreter isolated (-I) and writing no
-# bytecode (-B); the bridge by absolute path. Live: the model on Ollama.
+# bytecode (-B); the bridge by absolute path; started in /. Live: the
+# model on Ollama.
 # The whole of it runs in a transient systemd scope: memory and tasks
 # capped, IP traffic denied except to 127.0.0.1.
 SCOPE=()
@@ -631,7 +632,7 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     SCOPE_UNIT=anchorstamp-agent-$ID
     SCOPE=(systemd-run --scope --quiet --unit "$SCOPE_UNIT" -p MemoryMax=4G -p TasksMax=256 \
         -p IPAddressDeny=any -p IPAddressAllow=127.0.0.1/32 --)
-    AGENT_CMD=(setsid -w env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
+    AGENT_CMD=(setsid -w env -i -C / PATH=/usr/bin:/bin LANG=C.UTF-8 HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
         "$VENV"/bin/python -I -B "$INST/agent.py" "$RUN" \
         --bridge "$INST/anchorstamp-exec" --model "$MODEL")
 else
