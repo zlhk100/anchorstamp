@@ -24,6 +24,14 @@ name = "anchorstamp-core"
 version = "0.0.0"
 
 [[package]]
+name = "anchorstamp-exec"
+version = "0.0.0"
+dependencies = [
+ "anchorstamp",
+ "anchorstamp-core",
+]
+
+[[package]]
 name = "anchorstamp-observe-audit"
 version = "0.0.0"
 dependencies = [

@@ -1,0 +1,12 @@
+[package]
+name = "anchorstamp-exec"
+description = "Command-line bridge: lets an agent framework in any language run a command through the library and append its claim."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anchorstamp = { path = "../anchorstamp" }
+anchorstamp-core = { path = "../anchorstamp-core" }

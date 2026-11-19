@@ -6,6 +6,7 @@ members = [
     "crates/anchorstamp",
     "crates/anchorstamp-observe-audit",
     "crates/agentsim",
+    "crates/anchorstamp-exec",
     "crates/demo-report",
 ]
 
