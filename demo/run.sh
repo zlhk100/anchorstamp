@@ -718,6 +718,7 @@ log "step 7 $AGENT_NAME started via sudo pid=$AGENT_PID"
 PEAK=0
 SS_TICKS=0
 SS_FOREIGN=0
+SCOPE_SEEN=0
 while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/$AGENT_PID/status" 2>/dev/null)" != Z ]; do
     NOW=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
     [ "$NOW" -le "$PEAK" ] || PEAK=$NOW
@@ -738,6 +739,19 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
         stop "audit log reached $NOW bytes (3/4 of max_log_file is $WATCH_LIMIT); measured account killed"
         kill_agents || true
         break
+    fi
+    # framework: a process of the measured account seen inside the scope
+    if [ "$FRAMEWORK" -eq 1 ] && [ "$SCOPE_SEEN" -eq 0 ]; then
+        for p in $(pgrep -U "$AGENT_UID"); do
+            cg=$(cat "/proc/$p/cgroup" 2>/dev/null) || continue
+            case "$cg" in
+            *"/$SCOPE_UNIT.scope")
+                SCOPE_SEEN=1
+                log "step 7 pid $p of $AGENT is in its scope: $cg"
+                break
+                ;;
+            esac
+        done
     fi
     # live: a hard limit at twice the budget
     if [ "$LIVE" -eq 1 ] && [ $((($(date +%s%N) - AGENT_T0) / 1000000)) -ge $((LIVE_HARD_S * 1000)) ]; then
@@ -761,6 +775,12 @@ if [ "$FRAMEWORK" -eq 0 ]; then
     if [ "$AGENT_RC" -eq 3 ]; then stop "a refusal test succeeded"; fi
 else
     check "agent.py exit status: $AGENT_RC (0 = a final answer); elapsed ${AGENT_MS} ms"
+    if [ "$SCOPE_SEEN" -eq 1 ]; then
+        check "a process of $AGENT was seen in $SCOPE_UNIT.scope"
+    else
+        check "no process of $AGENT was seen in $SCOPE_UNIT.scope"
+        stop "the agent was not in its scope"
+    fi
 fi
 if [ "$LIVE" -eq 1 ]; then
     if [ "$AGENT_MS" -le $((LIVE_BUDGET_S * 1000)) ]; then
@@ -813,6 +833,18 @@ if [ "$FRAMEWORK" -eq 1 ]; then
         fi
     else
         check "claims/claims.bin: absent"
+    fi
+    # framework-netcheck passes only if the agent's own log shows curl,
+    # through run_command, ending non-zero: blocked by the scope
+    if [ "$SCENARIO" = framework-netcheck ]; then
+        if open_single "$RUN/claims/agent-log.jsonl" &&
+            head -c 1048576 <&"$AFD" | grep -aqE '"tool": "run_command", "argv": \["/usr/bin/curl"[^]]*\], "exit": -?[1-9][0-9]*,'; then
+            check "netcheck: curl through run_command exited non-zero (blocked)"
+        else
+            check "netcheck: no run_command entry for /usr/bin/curl with a non-zero exit"
+            stop "framework-netcheck: curl was not shown blocked"
+        fi
+        if [ -n "$AFD" ]; then exec {AFD}<&-; fi
     fi
 fi
 step9
