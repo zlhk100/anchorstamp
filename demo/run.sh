@@ -18,10 +18,10 @@
 # The framework scenarios add: preflight checks of the venv (and, live, of
 # Ollama); the bridge, agent.py and requirements.lock installed; the venv's
 # `pip freeze --all` run as the measured account and hashed; in step 7 the
-# agent in place of agentsim (live: a 90 s budget and an ss sample of the
-# measured account's TCP peers each watch tick); the leak search also reads
-# claims/agent-log.jsonl; after the report, that log is printed as the
-# agent's own account.
+# agent in place of agentsim (live: a 90 s budget, a stop at twice that,
+# and an ss sample of the measured account's TCP peers each watch tick);
+# the leak search also reads claims/agent-log.jsonl; after the report,
+# that log is printed as the agent's own account.
 #
 # What it does, in order:
 #    1  preflight checks; record `auditctl -s` and `auditctl -l`
@@ -66,6 +66,7 @@ VENV=/opt/anchorstamp-venv
 OLLAMA=127.0.0.1:11434
 LIVE_MODEL=qwen2.5:7b-instruct
 LIVE_BUDGET_S=90
+LIVE_HARD_S=$((2 * LIVE_BUDGET_S))
 
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 TREE=$(cd "$HERE/.." && pwd -P)
@@ -566,6 +567,12 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
     fi
     if [ "$NOW" -ge "$WATCH_LIMIT" ]; then
         stop "audit log reached $NOW bytes (3/4 of max_log_file is $WATCH_LIMIT); measured account killed"
+        kill_agents || true
+        break
+    fi
+    # live: a hard limit at twice the budget
+    if [ "$LIVE" -eq 1 ] && [ $((($(date +%s%N) - AGENT_T0) / 1000000)) -ge $((LIVE_HARD_S * 1000)) ]; then
+        stop "live run over the hard limit (${LIVE_HARD_S} s); measured account killed"
         kill_agents || true
         break
     fi
