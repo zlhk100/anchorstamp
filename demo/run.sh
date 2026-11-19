@@ -112,21 +112,20 @@ STOPPED=0
 # cron and at each count as not installed only when neither the command
 # nor its spool exists; one without the other is an inconsistent install.
 sched_check() {
-    local out rc n cron
+    local out n cron
     if command -v crontab >/dev/null 2>&1 && [ -e "$CRON_SPOOL" ]; then
-        out=$(crontab -l -u "$AGENT" 2>&1) && rc=0 || rc=$?
-        if [ "$rc" -eq 0 ]; then
+        # the spool file `crontab -l` would read, looked at directly: the
+        # account is barred from crontab (cron.deny), and crontab then
+        # refuses even root's `-l -u` for it
+        if [ ! -d "$CRON_SPOOL" ] || [ ! -r "$CRON_SPOOL" ] || [ ! -x "$CRON_SPOOL" ]; then
+            echo "$CRON_SPOOL is not a readable directory"
+            return 2
+        fi
+        if [ -e "$CRON_SPOOL/$AGENT" ] || [ -L "$CRON_SPOOL/$AGENT" ]; then
             echo "a crontab of $AGENT exists"
             return 1
         fi
-        case "$out" in
-        "no crontab for $AGENT"*) ;;
-        *)
-            echo "crontab -l -u $AGENT failed (rc=$rc): $(printf '%s' "$out" | head -n1)"
-            return 2
-            ;;
-        esac
-        cron="no crontab of $AGENT"
+        cron="no crontab of $AGENT (spool $CRON_SPOOL/$AGENT absent)"
     elif ! command -v crontab >/dev/null 2>&1 && [ ! -e "$CRON_SPOOL" ]; then
         cron="cron not installed: no cron job can exist"
     else
