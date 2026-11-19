@@ -682,6 +682,21 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     chown root:root "$RUN/claims"
     chmod 0755 "$RUN/claims"
     check "claims/ after step 8: $(stat -c '%U:%G %a' "$RUN/claims")"
+    # The bridge creates claims.bin 0600 for the measured account; the
+    # report reads it as the operator. Made 0644 through a descriptor on a
+    # regular file with one link, so the mode lands on the file checked.
+    if [ -e "$RUN/claims/claims.bin" ] || [ -L "$RUN/claims/claims.bin" ]; then
+        if open_single "$RUN/claims/claims.bin"; then
+            chmod 0644 "/proc/self/fd/$AFD"
+            exec {AFD}<&-
+            check "claims/claims.bin made readable for the report: $(stat -c '%U:%G %a' "$RUN/claims/claims.bin")"
+        else
+            check "claims/claims.bin: not a regular file with one link; left as it is"
+            stop "claims/claims.bin is not a regular file with one link"
+        fi
+    else
+        check "claims/claims.bin: absent"
+    fi
 fi
 step9
 ANCHOR_SHA_END=$(sha256sum "$RUN/sink/anchor.pub" | cut -d' ' -f1)
