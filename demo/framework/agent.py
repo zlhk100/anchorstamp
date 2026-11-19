@@ -56,6 +56,7 @@ from smolagents.models import (
 )
 
 MAX_OUTPUT = 4000
+STDERR_TAIL = 512
 CHILD_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"}
 LOCAL_MODEL_HOST = "127.0.0.1"
 
@@ -99,20 +100,25 @@ class RunCommand(Tool):
             check=False,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
-            errors="replace",
             env=CHILD_ENV,
         )
+        out = p.stdout.decode("utf-8", errors="replace")
+        err = p.stderr.decode("utf-8", errors="replace")
         claim = next(
-            (
-                line
-                for line in p.stderr.splitlines()
-                if line.startswith("anchorstamp-exec:")
-            ),
+            (line for line in err.splitlines() if line.startswith("anchorstamp-exec:")),
             "",
         )
-        self.log.write(tool=self.name, argv=argv, exit=p.returncode, bridge=claim)
-        return f"exit={p.returncode}\n{p.stdout[:MAX_OUTPUT]}{p.stderr[:MAX_OUTPUT]}"
+        # The last bytes of stderr: the program's own error, then the
+        # bridge's line.
+        tail = p.stderr[-STDERR_TAIL:].decode("utf-8", errors="replace")
+        self.log.write(
+            tool=self.name,
+            argv=argv,
+            exit=p.returncode,
+            bridge=claim,
+            stderr_tail=tail,
+        )
+        return f"exit={p.returncode}\n{out[:MAX_OUTPUT]}{err[:MAX_OUTPUT]}"
 
 
 class SystemReport(Tool):

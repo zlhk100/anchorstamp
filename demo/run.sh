@@ -852,16 +852,26 @@ if [ "$FRAMEWORK" -eq 1 ]; then
         check "claims/claims.bin: absent"
     fi
     # framework-netcheck passes only if the agent's own log shows curl,
-    # through run_command, ending non-zero: blocked by the scope
+    # through run_command, blocked by the scope: exit 7 (could not
+    # connect), a claim from the bridge, and the kernel's refusal in the
+    # tail of its stderr. Anything else is a stop, with the entry shown.
     if [ "$SCENARIO" = framework-netcheck ]; then
-        if open_single "$RUN/claims/agent-log.jsonl" &&
-            head -c 1048576 <&"$AFD" | grep -aqE '"tool": "run_command", "argv": \["/usr/bin/curl"[^]]*\], "exit": -?[1-9][0-9]*,'; then
-            check "netcheck: curl through run_command exited non-zero (blocked)"
-        else
-            check "netcheck: no run_command entry for /usr/bin/curl with a non-zero exit"
-            stop "framework-netcheck: curl was not shown blocked"
+        NC=""
+        if open_single "$RUN/claims/agent-log.jsonl"; then
+            NC=$(head -c 1048576 <&"$AFD" |
+                grep -a -m1 -E '^\{"tool": "run_command", "argv": \["/usr/bin/curl"[],]' |
+                LC_ALL=C tr -cd '\11\40-\176') || true
+            exec {AFD}<&-
         fi
-        if [ -n "$AFD" ]; then exec {AFD}<&-; fi
+        NC_TAIL=${NC#*\"stderr_tail\": \"}
+        if [ -n "$NC" ] && [ "$NC_TAIL" != "$NC" ] &&
+            printf '%s' "$NC" | grep -qE '"exit": 7, "bridge": "anchorstamp-exec: claim pid=[0-9]+"' &&
+            case "$NC_TAIL" in *"Operation not permitted"*) true ;; *) false ;; esac; then
+            check "netcheck: curl through run_command blocked by the scope: exit 7, claimed by the bridge, stderr \"Operation not permitted\""
+        else
+            check "netcheck: curl not shown blocked; entry: ${NC:-none}"
+            stop "framework-netcheck: curl was not shown blocked by the scope"
+        fi
     fi
 fi
 step9
