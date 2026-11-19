@@ -1,0 +1,19 @@
+# shellcheck findings of the scripts committed at dc1b8f0,
+# one per line: file, code, line content (tab-separated).
+# Written by scripts/check.sh --write-shellcheck-baseline.
+# shellcheck 0.8.0
+demo/run.sh	SC2012	check "sink entries: $(cd "$RUN/sink" && ls -A | tr '\n' ' ')"
+demo/run.sh	SC2015	[ ! -L "$d" ] && [ -d "$d" ] || die "$d is not a plain directory"
+demo/run.sh	SC2015	[ "$AGENT_UID" -ne 0 ] && [ "$AGENT_UID" -ne "$NOBODY" ] || die "$AGENT uid $AGENT_UID"
+demo/run.sh	SC2015	[ -f "$f" ] && [ ! -L "$f" ] || die "missing $f — build it first"
+demo/run.sh	SC2015	[ -f "$src" ] && [ ! -L "$src" ] || die "install source not a regular file: $src"
+demo/run.sh	SC2015	[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die "not invoked through sudo by an operator"
+demo/run.sh	SC2024	</dev/null >"$RUN/agent.log" 2>&1 &
+demo/run.sh	SC2024	sudo -n -u "$SUDO_USER" -- "$INST/demo-report" "$RUN" >"$RUN/report.txt"
+demo/run.sh	SC2034	for i in 1 2 3 4 5 6 7 8 9 10; do
+demo/run.sh	SC2066	for d in "$INSTALL_BASE"; do
+demo/run.sh	SC2086	auditctl -a $RULE32
+demo/run.sh	SC2086	auditctl -a $RULE64
+demo/run.sh	SC2086	b32) auditctl -d $RULE32 && r=0 || r=$? ; log "step 10 delete: -d $RULE32 rc=$r" ;;
+demo/run.sh	SC2086	b64) auditctl -d $RULE64 && r=0 || r=$? ; log "step 10 delete: -d $RULE64 rc=$r" ;;
+demo/run.sh	SC2086	set -- $rest

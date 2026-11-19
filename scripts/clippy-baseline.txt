@@ -1,0 +1,10 @@
+# clippy pedantic findings per existing crate, all targets,
+# unique by lint and position. Written by
+# scripts/check.sh --write-clippy-baseline at dc1b8f0.
+# clippy 0.1.98 (88d9e12ae1 2026-08-18)
+anchorstamp-core 17
+anchorstamp-verify 32
+anchorstamp 11
+anchorstamp-observe-audit 109
+agentsim 32
+demo-report 14
