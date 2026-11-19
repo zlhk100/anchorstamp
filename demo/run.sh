@@ -19,7 +19,7 @@
 # Ollama); the bridge, agent.py and requirements.lock installed; the venv's
 # `pip freeze --all` run as the measured account and hashed; in step 7 the
 # agent in place of agentsim (live: a 90 s budget, a stop at twice that,
-# and an ss sample of the measured account's TCP peers each watch tick);
+# and an ss sample of the measured account's TCP/UDP peers each tick);
 # the leak search also reads claims/agent-log.jsonl; after the report,
 # that log is printed as the agent's own account.
 #
@@ -555,15 +555,16 @@ SS_FOREIGN=0
 while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/$AGENT_PID/status" 2>/dev/null)" != Z ]; do
     NOW=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
     [ "$NOW" -le "$PEAK" ] || PEAK=$NOW
-    # live: the measured account's TCP sockets whose peer is not Ollama
+    # live: the measured account's TCP/UDP sockets whose peer is not
+    # Ollama. With two protocols ss prints a Netid column: the peer is $6.
     if [ "$LIVE" -eq 1 ]; then
         SS_TICKS=$((SS_TICKS + 1))
         while IFS= read -r l; do
             [ -n "$l" ] || continue
             SS_FOREIGN=$((SS_FOREIGN + 1))
-            log "step 7 ss: measured-account peer other than $OLLAMA: $l"
-        done < <(ss -tnpeH 2>/dev/null | awk -v u="uid:$AGENT_UID" -v ok="$OLLAMA" \
-            '{ for (i = 6; i <= NF; i++) if ($i == u) { if ($5 != ok) print; break } }')
+            log "step 7 ss: measured-account TCP/UDP peer other than $OLLAMA: $l"
+        done < <(ss -tunpeH 2>/dev/null | awk -v u="uid:$AGENT_UID" -v ok="$OLLAMA" \
+            '{ for (i = 7; i <= NF; i++) if ($i == u) { if ($6 != ok) print; break } }')
     fi
     if [ "$NOW" -ge "$WATCH_LIMIT" ]; then
         stop "audit log reached $NOW bytes (3/4 of max_log_file is $WATCH_LIMIT); measured account killed"
@@ -599,7 +600,7 @@ if [ "$LIVE" -eq 1 ]; then
     else
         check "live run elapsed ${AGENT_MS} ms: OVER the ${LIVE_BUDGET_S} s budget (show the scripted run)"
     fi
-    check "ss -tnpe samples: $SS_TICKS; measured-account TCP peers other than $OLLAMA: $SS_FOREIGN"
+    check "ss -tunpe samples: $SS_TICKS; measured-account TCP/UDP peers other than $OLLAMA: $SS_FOREIGN"
 fi
 
 # ---- 8, 9, 10 ----------------------------------------------------------
