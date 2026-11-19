@@ -129,7 +129,7 @@ else
     else
         bad=()
         for c in "${present[@]}"; do
-            cargo clippy -q -p "$c" --all-targets -- -W clippy::pedantic -D warnings ||
+            cargo clippy -q -p "$c" --no-deps --all-targets -- -W clippy::pedantic -D warnings ||
                 bad+=("$c")
         done
         if [ ${#bad[@]} -eq 0 ]; then
