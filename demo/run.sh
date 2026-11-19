@@ -316,6 +316,9 @@ if [ "$FRAMEWORK" -eq 1 ]; then
         if [ ! -f "$f" ] || [ -L "$f" ]; then die "missing $f — build it first"; fi
     done
     command -v systemd-run >/dev/null || die "systemd-run not found: the framework runs inside a scope"
+    CGFS=$(stat -f -c %T /sys/fs/cgroup 2>/dev/null) || CGFS=unreadable
+    [ "$CGFS" = cgroup2fs ] || die "/sys/fs/cgroup is $CGFS, not cgroup2fs: MemoryMax and TasksMax need the unified cgroup v2 hierarchy"
+    log "preflight cgroup: ok /sys/fs/cgroup is cgroup2fs"
     if [ -L "$VENV" ] || [ ! -d "$VENV" ]; then die "$VENV is not a directory; run demo/framework/install-venv.sh"; fi
     [ "$(stat -c '%u:%g' "$VENV")" = "0:0" ] || die "$VENV not owned by root:root"
     BAD=$(find "$VENV" \( ! -uid 0 -o ! -gid 0 \) -print -quit)
