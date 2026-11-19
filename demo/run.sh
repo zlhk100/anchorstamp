@@ -5,8 +5,10 @@
 #   sudo demo/run.sh --leak-test <scenario>
 #
 # Scenarios: honest shadow forger pipeline subagent burst evade longpath
-# tamper escalate (agentsim); framework framework-live (a real agent
-# framework, demo/framework/agent.py, in the venv /opt/anchorstamp-venv).
+# tamper escalate (agentsim); framework framework-live framework-netcheck
+# (a real agent framework, demo/framework/agent.py, in the venv
+# /opt/anchorstamp-venv; framework-netcheck is the test that the scope
+# blocks the network).
 #
 # Before running, as the operator (not root):
 #   cargo build --workspace --release
@@ -18,7 +20,8 @@
 # The framework scenarios add: preflight checks of the venv (and, live, of
 # Ollama); the bridge, agent.py and requirements.lock installed; the venv's
 # `pip freeze --all` run as the measured account and hashed; in step 7 the
-# agent in place of agentsim (live: a 90 s budget, a stop at twice that,
+# agent in place of agentsim, inside a systemd scope that caps memory and
+# tasks and allows IP traffic to 127.0.0.1 only (live: a 90 s budget, a stop at twice that,
 # and an ss sample of the measured account's TCP/UDP peers each tick);
 # the leak search also reads claims/agent-log.jsonl; after the report,
 # that log is printed as the agent's own account.
@@ -63,7 +66,7 @@ STATE=/var/lib/anchorstamp
 INSTALL_BASE=/usr/local/lib/anchorstamp-poc
 AUDITD_CONF=/etc/audit/auditd.conf
 SCENARIOS="honest shadow forger pipeline subagent burst evade longpath tamper escalate"
-FRAMEWORK_SCENARIOS="framework framework-live"
+FRAMEWORK_SCENARIOS="framework framework-live framework-netcheck"
 VENV=/opt/anchorstamp-venv
 OLLAMA=127.0.0.1:11434
 LIVE_MODEL=qwen2.5:7b-instruct
@@ -246,6 +249,7 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     for f in "$REL/anchorstamp-exec" "$HERE/framework/agent.py" "$HERE/framework/requirements.lock"; do
         if [ ! -f "$f" ] || [ -L "$f" ]; then die "missing $f — build it first"; fi
     done
+    command -v systemd-run >/dev/null || die "systemd-run not found: the framework runs inside a scope"
     if [ -L "$VENV" ] || [ ! -d "$VENV" ]; then die "$VENV is not a directory; run demo/framework/install-venv.sh"; fi
     [ "$(stat -c '%u:%g' "$VENV")" = "0:0" ] || die "$VENV not owned by root:root"
     BAD=$(find "$VENV" \( ! -uid 0 -o ! -gid 0 \) -print -quit)
@@ -285,6 +289,14 @@ log "preflight log size: ok $LOG_FILE size=$SIZE limit=$LIMIT; the run is stoppe
 NAME_FORMAT=$(sed -n 's/^name_format *= *//p' "$AUDITD_CONF" | head -n1 | tr '[:lower:]' '[:upper:]')
 [ "$NAME_FORMAT" = "NONE" ] || die "auditd.conf name_format is '${NAME_FORMAT:-unset}', not NONE: every record would gain a node= field"
 log "preflight name_format: ok NONE"
+# framework: room for the audit log to grow to twice max_log_file
+if [ "$FRAMEWORK" -eq 1 ]; then
+    FREE=$(df -P -B1 --output=avail "$LOG_FILE" | tail -n1 | tr -d ' ')
+    case "$FREE" in '' | *[!0-9]*) die "cannot read free space under $LOG_FILE" ;; esac
+    NEED=$((2 * MAX_MB * 1024 * 1024))
+    [ "$FREE" -ge "$NEED" ] || die "free space under $LOG_FILE is $FREE bytes, below 2 x max_log_file ($NEED)"
+    log "preflight free space: ok $FREE bytes under $LOG_FILE, at least $NEED"
+fi
 
 # ---- 2 install ---------------------------------------------------------
 ID=$(date -u +%Y%m%dT%H%M%S)-$$
@@ -594,10 +606,17 @@ log "step 6 ok"
 # The framework: an empty environment but for PATH, LANG and the two
 # Hugging Face switches; the venv's interpreter isolated (-I) and writing no
 # bytecode (-B); the bridge by absolute path. Live: the model on Ollama.
+# The whole of it runs in a transient systemd scope: memory and tasks
+# capped, IP traffic denied except to 127.0.0.1.
+SCOPE=()
 if [ "$FRAMEWORK" -eq 1 ]; then
     AGENT_NAME=agent.py
     MODEL=scripted
     if [ "$LIVE" -eq 1 ]; then MODEL="openai:http://$OLLAMA/v1#$LIVE_MODEL"; fi
+    if [ "$SCENARIO" = framework-netcheck ]; then MODEL=scripted:netcheck; fi
+    SCOPE_UNIT=anchorstamp-agent-$ID
+    SCOPE=(systemd-run --scope --quiet --unit "$SCOPE_UNIT" -p MemoryMax=4G -p TasksMax=256 \
+        -p IPAddressDeny=any -p IPAddressAllow=127.0.0.1/32 --)
     AGENT_CMD=(setsid -w env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
         "$VENV"/bin/python -I -B "$INST/agent.py" "$RUN" \
         --bridge "$INST/anchorstamp-exec" --model "$MODEL")
@@ -605,9 +624,12 @@ else
     AGENT_NAME=agentsim
     AGENT_CMD=(setsid -w "$INST/agentsim" "$INST/scenarios/$SCENARIO.txt" "$RUN")
 fi
-if [ "$FRAMEWORK" -eq 1 ]; then log "step 7 command: sudo -n -u $AGENT -- ${AGENT_CMD[*]}"; fi
+if [ "$FRAMEWORK" -eq 1 ]; then
+    log "step 7 command: ${SCOPE[*]} sudo -n -u $AGENT -- ${AGENT_CMD[*]}"
+    check "framework scope: $SCOPE_UNIT.scope (MemoryMax=4G TasksMax=256 IPAddressDeny=any IPAddressAllow=127.0.0.1/32)"
+fi
 AGENT_T0=$(date +%s%N)
-sudo -n -u "$AGENT" -- "${AGENT_CMD[@]}" \
+"${SCOPE[@]}" sudo -n -u "$AGENT" -- "${AGENT_CMD[@]}" \
     </dev/null >"$RUN/agent.log" 2>&1 &
 AGENT_PID=$!
 log "step 7 $AGENT_NAME started via sudo pid=$AGENT_PID"

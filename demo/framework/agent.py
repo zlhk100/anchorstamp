@@ -7,6 +7,9 @@
     M is one of
       scripted                 a fixed plan, no network
       scripted:envcheck        test plan: /usr/bin/env through each tool
+      scripted:netcheck        test plan: curl to 1.1.1.1 through
+                               run_command; run only inside the harness's
+                               scope, which must block it
       openai:<base>#<model>    an OpenAI-compatible server whose host is
                                exactly 127.0.0.1, e.g. Ollama at
                                openai:http://127.0.0.1:11434/v1#qwen2.5:7b-instruct
@@ -175,6 +178,13 @@ class ScriptedModel(Model):
                 },
             ),
         ],
+        "scripted:netcheck": [
+            (
+                "run_command",
+                {"command": "/usr/bin/curl -sS --max-time 3 http://1.1.1.1/"},
+            ),
+            ("final_answer", {"answer": "Tried to reach 1.1.1.1."}),
+        ],
         "scripted:envcheck": [
             ("run_command", {"command": "/usr/bin/env"}),
             ("env_report", {}),
@@ -234,7 +244,8 @@ def main():
     ap.add_argument(
         "--model",
         required=True,
-        help="scripted | scripted:envcheck | openai:<base>#<model> (host 127.0.0.1)",
+        help="scripted | scripted:envcheck | scripted:netcheck | "
+        "openai:<base>#<model> (host 127.0.0.1)",
     )
     ap.add_argument(
         "--task",
@@ -256,7 +267,7 @@ def main():
     parsed = parse_model(a.model)
     if parsed is None:
         ap.error(
-            "--model must be scripted, scripted:envcheck or "
+            "--model must be scripted, scripted:envcheck, scripted:netcheck or "
             f"openai:<base>#<model> with host {LOCAL_MODEL_HOST}: {a.model!r}"
         )
     kind, model_arg = parsed
