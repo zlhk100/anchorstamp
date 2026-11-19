@@ -824,9 +824,16 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     # regular file with one link, so the mode lands on the file checked.
     if [ -e "$RUN/claims/claims.bin" ] || [ -L "$RUN/claims/claims.bin" ]; then
         if open_single "$RUN/claims/claims.bin"; then
-            chmod 0644 "/proc/self/fd/$AFD"
+            # only a file the measured account owns is the bridge's
+            CB_UID=$(stat -L -c %u "/proc/self/fd/$AFD")
+            if [ "$CB_UID" = "$AGENT_UID" ]; then
+                chmod 0644 "/proc/self/fd/$AFD"
+                check "claims/claims.bin made readable for the report: $(stat -c '%U:%G %a' "$RUN/claims/claims.bin")"
+            else
+                check "claims/claims.bin owned by uid $CB_UID, not $AGENT ($AGENT_UID); left as it is"
+                stop "claims/claims.bin is not owned by the measured account"
+            fi
             exec {AFD}<&-
-            check "claims/claims.bin made readable for the report: $(stat -c '%U:%G %a' "$RUN/claims/claims.bin")"
         else
             check "claims/claims.bin: not a regular file with one link; left as it is"
             stop "claims/claims.bin is not a regular file with one link"
