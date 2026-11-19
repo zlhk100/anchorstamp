@@ -16,3 +16,4 @@ target/
 *~
 .idea/
 .vscode/
+scripts/shiftleft/probe-crates/Cargo.lock
