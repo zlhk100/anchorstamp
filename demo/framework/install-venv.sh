@@ -52,6 +52,4 @@ BAD=$(find "$VENV" \( ! -uid 0 -o ! -gid 0 \) -print -quit)
 BAD=$(find "$VENV" ! -type l -perm /022 -print -quit)
 [ -z "$BAD" ] || die "entry writable by group or other: $BAD"
 say "ownership: root:root throughout; nothing group- or other-writable"
-say "pip freeze --all:"
-"$VENV/bin/python" -I -B -m pip freeze --all --disable-pip-version-check --no-input
 say "done"
