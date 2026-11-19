@@ -371,7 +371,7 @@ NAME_FORMAT=$(sed -n 's/^name_format *= *//p' "$AUDITD_CONF" | head -n1 | tr '[:
 log "preflight name_format: ok NONE"
 # framework: room for the audit log to grow to twice max_log_file
 if [ "$FRAMEWORK" -eq 1 ]; then
-    FREE=$(df -P -B1 --output=avail "$LOG_FILE" | tail -n1 | tr -d ' ')
+    FREE=$(df -B1 --output=avail "$LOG_FILE" | tail -n1 | tr -d ' ')
     case "$FREE" in '' | *[!0-9]*) die "cannot read free space under $LOG_FILE" ;; esac
     NEED=$((2 * MAX_MB * 1024 * 1024))
     [ "$FREE" -ge "$NEED" ] || die "free space under $LOG_FILE is $FREE bytes, below 2 x max_log_file ($NEED)"
