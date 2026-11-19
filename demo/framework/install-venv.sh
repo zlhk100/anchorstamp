@@ -58,8 +58,10 @@ exec {fd}<&-
 chown root:root "$COPY"
 chmod 0600 "$COPY"
 [ "$(stat -c '%u:%g %a' "$COPY")" = "0:0 600" ] || die "$COPY is not root:root 0600"
-# every line: blank, a comment, name==version, or a sha256 hash continuation
-BAD=$(grep -nvE '^[[:space:]]*(#.*)?$|^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9.+!_-]*( \\)?$|^[[:space:]]+--hash=sha256:[0-9a-f]{64}( \\)?$' "$COPY" | head -n3) || true
+# no NUL byte (grep would treat the file as binary); then every line:
+# blank, a comment, name==version, or a sha256 hash continuation
+[ "$(tr -d '\000' <"$COPY" | wc -c)" -eq "$(wc -c <"$COPY")" ] || die "$LOCK contains a NUL byte"
+BAD=$(grep -navE '^[[:space:]]*(#.*)?$|^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9.+!_-]*( \\)?$|^[[:space:]]+--hash=sha256:[0-9a-f]{64}( \\)?$' "$COPY" | head -n3) || true
 [ -z "$BAD" ] || die "$LOCK holds a line that is not a pinned requirement or a hash: $BAD"
 say "lock: copied from $LOCK; copy sha256 $(sha256sum "$COPY" | cut -d' ' -f1)"
 
