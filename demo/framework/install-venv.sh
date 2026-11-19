@@ -58,9 +58,11 @@ exec {fd}<&-
 chown root:root "$COPY"
 chmod 0600 "$COPY"
 [ "$(stat -c '%u:%g %a' "$COPY")" = "0:0 600" ] || die "$COPY is not root:root 0600"
-# no NUL byte (grep would treat the file as binary); then every line:
-# blank, a comment, name==version, or a sha256 hash continuation
-[ "$(tr -d '\000' <"$COPY" | wc -c)" -eq "$(wc -c <"$COPY")" ] || die "$LOCK contains a NUL byte"
+# every byte TAB, LF or printable ASCII: pip also splits lines at \v, \f
+# and other controls, grep only at LF, so nothing else may appear; then
+# every line: blank, a comment, name==version, or a sha256 hash continuation
+[ "$(LC_ALL=C tr -d '\011\012\040-\176' <"$COPY" | wc -c)" -eq 0 ] ||
+    die "$LOCK holds a byte other than TAB, LF or printable ASCII"
 BAD=$(grep -navE '^[[:space:]]*(#.*)?$|^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9.+!_-]*( \\)?$|^[[:space:]]+--hash=sha256:[0-9a-f]{64}( \\)?$' "$COPY" | head -n3) || true
 [ -z "$BAD" ] || die "$LOCK holds a line that is not a pinned requirement or a hash: $BAD"
 say "lock: copied from $LOCK; copy sha256 $(sha256sum "$COPY" | cut -d' ' -f1)"
