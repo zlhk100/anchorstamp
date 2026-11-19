@@ -1,5 +1,5 @@
 #!/bin/bash
-# scripts/check.sh — the code-profile check target (docs/coding-standard.md).
+# scripts/check.sh — the check target of the coding standard (docs/coding-standard.md).
 #
 #   scripts/check.sh                              run every rule
 #   scripts/check.sh --write-clippy-baseline      record per-crate clippy
@@ -20,7 +20,7 @@ export LC_ALL=C
 
 cd "$(dirname "$0")/.."
 
-# Crates added under the code profile: full rules (CS-RS-1, CS-RS-2).
+# Crates added since the coding standard: full rules (CS-RS-1, CS-RS-2).
 NEW_CRATES=(anchorstamp-exec)
 BASELINE=scripts/clippy-baseline.txt
 SC_BASELINE=scripts/shellcheck-baseline.txt
@@ -283,7 +283,7 @@ else
 fi
 
 # CS-SH-1  no shellcheck finding beyond the baseline (scripts committed
-# before the profile); new scripts therefore clean; set -eu in every script.
+# before the standard); new scripts therefore clean; set -eu in every script.
 if ! have shellcheck; then
     report CS-SH-1 MISSING "shellcheck not installed"
 elif ! have jq; then

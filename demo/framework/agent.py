@@ -169,7 +169,7 @@ def call(i, name, arguments):
 
 
 class ScriptedModel(Model):
-    """Replays a fixed plan: the offline backup and the harness scenario."""
+    """Replays a fixed plan: deterministic and offline; the harness scenario's plan."""
 
     PLANS: ClassVar[dict] = {
         "scripted": [
