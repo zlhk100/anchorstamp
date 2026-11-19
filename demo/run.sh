@@ -264,6 +264,8 @@ if [ "$FRAMEWORK" -eq 1 ]; then
         printf '%s' "$MODELS" | grep -Eq "\"id\": *\"${LIVE_MODEL//./\\.}\"" ||
             die "Ollama on $OLLAMA does not list $LIVE_MODEL"
         log "preflight ollama: ok $OLLAMA lists $LIVE_MODEL"
+        ss -tuneH >/dev/null || die "ss -tuneH fails: the live run's socket sample would be empty"
+        log "preflight ss: ok"
     fi
 fi
 
@@ -686,7 +688,7 @@ if [ "$LIVE" -eq 1 ]; then
     else
         check "live run elapsed ${AGENT_MS} ms: OVER the ${LIVE_BUDGET_S} s budget (show the scripted run)"
     fi
-    check "ss -tune samples: $SS_TICKS; measured-account TCP/UDP peers other than $OLLAMA: $SS_FOREIGN"
+    check "ss -tune samples: $SS_TICKS; measured-account TCP/UDP peers other than $OLLAMA: at least $SS_FOREIGN"
 fi
 
 # ---- 8, 9, 10 ----------------------------------------------------------
