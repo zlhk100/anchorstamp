@@ -641,13 +641,15 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
     [ "$NOW" -le "$PEAK" ] || PEAK=$NOW
     # live: the measured account's TCP/UDP sockets whose peer is not
     # Ollama. With two protocols ss prints a Netid column: the peer is $6.
+    # No -p: process names are the measured account's to choose; a logged
+    # line is cut to printable ASCII.
     if [ "$LIVE" -eq 1 ]; then
         SS_TICKS=$((SS_TICKS + 1))
         while IFS= read -r l; do
             [ -n "$l" ] || continue
             SS_FOREIGN=$((SS_FOREIGN + 1))
-            log "step 7 ss: measured-account TCP/UDP peer other than $OLLAMA: $l"
-        done < <(ss -tunpeH 2>/dev/null | awk -v u="uid:$AGENT_UID" -v ok="$OLLAMA" \
+            log "step 7 ss: measured-account TCP/UDP peer other than $OLLAMA: $(printf '%s' "$l" | LC_ALL=C tr -cd '\11\40-\176')"
+        done < <(ss -tuneH 2>/dev/null | awk -v u="uid:$AGENT_UID" -v ok="$OLLAMA" \
             '{ for (i = 7; i <= NF; i++) if ($i == u) { if ($6 != ok) print; break } }')
     fi
     if [ "$NOW" -ge "$WATCH_LIMIT" ]; then
@@ -684,7 +686,7 @@ if [ "$LIVE" -eq 1 ]; then
     else
         check "live run elapsed ${AGENT_MS} ms: OVER the ${LIVE_BUDGET_S} s budget (show the scripted run)"
     fi
-    check "ss -tunpe samples: $SS_TICKS; measured-account TCP/UDP peers other than $OLLAMA: $SS_FOREIGN"
+    check "ss -tune samples: $SS_TICKS; measured-account TCP/UDP peers other than $OLLAMA: $SS_FOREIGN"
 fi
 
 # ---- 8, 9, 10 ----------------------------------------------------------
