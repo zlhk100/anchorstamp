@@ -72,6 +72,9 @@ OLLAMA=127.0.0.1:11434
 LIVE_MODEL=qwen2.5:7b-instruct
 LIVE_BUDGET_S=90
 LIVE_HARD_S=$((2 * LIVE_BUDGET_S))
+CRON_SPOOL=/var/spool/cron/crontabs
+AT_SPOOL=/var/spool/cron/atjobs
+ATD=/usr/sbin/atd
 
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 TREE=$(cd "$HERE/.." && pwd -P)
@@ -102,20 +105,30 @@ STOPPED=0
 
 # The measured account's scheduled jobs (crontab, at), which would run
 # outside the run. Prints one line; returns 0 none, 1 some, 2 cannot tell.
+# cron and at each count as not installed only when neither the command
+# nor its spool exists; one without the other is an inconsistent install.
 sched_check() {
-    local out rc n
-    out=$(crontab -l -u "$AGENT" 2>&1) && rc=0 || rc=$?
-    if [ "$rc" -eq 0 ]; then
-        echo "a crontab of $AGENT exists"
-        return 1
-    fi
-    case "$out" in
-    "no crontab for $AGENT"*) ;;
-    *)
-        echo "crontab -l -u $AGENT failed (rc=$rc): $(printf '%s' "$out" | head -n1)"
+    local out rc n cron
+    if command -v crontab >/dev/null 2>&1 && [ -e "$CRON_SPOOL" ]; then
+        out=$(crontab -l -u "$AGENT" 2>&1) && rc=0 || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "a crontab of $AGENT exists"
+            return 1
+        fi
+        case "$out" in
+        "no crontab for $AGENT"*) ;;
+        *)
+            echo "crontab -l -u $AGENT failed (rc=$rc): $(printf '%s' "$out" | head -n1)"
+            return 2
+            ;;
+        esac
+        cron="no crontab of $AGENT"
+    elif ! command -v crontab >/dev/null 2>&1 && [ ! -e "$CRON_SPOOL" ]; then
+        cron="cron not installed: no cron job can exist"
+    else
+        echo "crontab and $CRON_SPOOL do not agree: inconsistent cron install"
         return 2
-        ;;
-    esac
+    fi
     if command -v atq >/dev/null 2>&1; then
         out=$(atq 2>&1) || {
             echo "atq failed: $(printf '%s' "$out" | head -n1)"
@@ -126,12 +139,12 @@ sched_check() {
             echo "$n at job(s) of $AGENT"
             return 1
         fi
-        echo "no crontab and no at job of $AGENT"
-    elif [ -e /usr/sbin/atd ] || [ -e /var/spool/cron/atjobs ]; then
-        echo "atq absent but atd or /var/spool/cron/atjobs present: inconsistent at install"
+        echo "$cron; no at job of $AGENT"
+    elif [ -e "$ATD" ] || [ -e "$AT_SPOOL" ]; then
+        echo "atq absent but $ATD or $AT_SPOOL present: inconsistent at install"
         return 2
     else
-        echo "no crontab of $AGENT; at not installed (no atq, no atd, no spool): no at job can exist"
+        echo "$cron; at not installed (no atq, no atd, no spool): no at job can exist"
     fi
     return 0
 }
