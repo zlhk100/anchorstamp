@@ -24,7 +24,8 @@
 # that log is printed as the agent's own account.
 #
 # What it does, in order:
-#    1  preflight checks; record `auditctl -s` and `auditctl -l`
+#    1  preflight checks; record `auditctl -s` and `auditctl -l`; the
+#       measured account has no crontab and no at job
 #    2  install the binaries and scenarios into a new root-owned directory,
 #       each copied from a regular file through a descriptor; record SHA-256
 #    3  create the run directory (never reused) with sink/ and claims/
@@ -34,7 +35,8 @@
 #    7  run the scenario as the measured account, no terminal, watching
 #       the audit log's size; at 3/4 of max_log_file the account is killed
 #    8  kill every process of the measured account by uid until none is
-#       left; settle 2 s
+#       left; settle 2 s; then check again for a crontab or at job (a stop
+#       if one appeared)
 #    9  SIGTERM the observer by its pid; wait at most 5 s, then SIGKILL
 #   10  delete the rules by exact text; compare rules and audit counters
 #   11  run the report as the operator
@@ -94,6 +96,60 @@ stop() {
     STOPPED=1
 }
 STOPPED=0
+
+# The measured account's scheduled jobs (crontab, at), which would run
+# outside the run. Prints one line; returns 0 none, 1 some, 2 cannot tell.
+sched_check() {
+    local out rc n
+    out=$(crontab -l -u "$AGENT" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "a crontab of $AGENT exists"
+        return 1
+    fi
+    case "$out" in
+    "no crontab for $AGENT"*) ;;
+    *)
+        echo "crontab -l -u $AGENT failed (rc=$rc): $(printf '%s' "$out" | head -n1)"
+        return 2
+        ;;
+    esac
+    if command -v atq >/dev/null 2>&1; then
+        out=$(atq 2>&1) || {
+            echo "atq failed: $(printf '%s' "$out" | head -n1)"
+            return 2
+        }
+        n=$(printf '%s\n' "$out" | awk -v u="$AGENT" '$NF == u' | wc -l)
+        if [ "$n" -gt 0 ]; then
+            echo "$n at job(s) of $AGENT"
+            return 1
+        fi
+        echo "no crontab and no at job of $AGENT"
+    elif [ -e /usr/sbin/atd ] || [ -e /var/spool/cron/atjobs ]; then
+        echo "atq absent but atd or /var/spool/cron/atjobs present: inconsistent at install"
+        return 2
+    else
+        echo "no crontab of $AGENT; at not installed (no atq, no atd, no spool): no at job can exist"
+    fi
+    return 0
+}
+
+# Open $1 for reading on descriptor AFD, only if it is a regular file, not
+# a symbolic link, and the opened file has exactly one link. Checked first
+# so no FIFO is opened. Returns 1, with AFD empty, otherwise.
+open_single() {
+    AFD=""
+    if [ -L "$1" ] || [ ! -f "$1" ]; then return 1; fi
+    exec {AFD}<"$1" || {
+        AFD=""
+        return 1
+    }
+    case "$(stat -L -c '%F %h' "/proc/self/fd/$AFD")" in
+    "regular file 1" | "regular empty file 1") return 0 ;;
+    esac
+    exec {AFD}<&-
+    AFD=""
+    return 1
+}
 
 # ---- arguments ---------------------------------------------------------
 LEAK=0
@@ -165,6 +221,11 @@ log "preflight account: ok $AGENT uid=$AGENT_UID groups=$(id -nG "$AGENT") shell
 LEFT=$(pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") || true
 [ -z "$LEFT" ] || die "processes of $AGENT exist before the run: $(printf '%s' "$LEFT" | tr '\n' ' ')"
 log "preflight account processes: ok none"
+
+# no crontab and no at job of the measured account
+SCHED_BEFORE=$(sched_check) && r=0 || r=$?
+[ "$r" -eq 0 ] || die "scheduled jobs: $SCHED_BEFORE"
+log "preflight scheduled jobs: ok $SCHED_BEFORE"
 
 # release binaries built
 REL=$TREE/target/release
@@ -293,6 +354,7 @@ check() { printf '%s\n' "$*" >>"$CHECKS"; log "check $*"; }
 printf '%s\n' "$STATUS_BEFORE" >"$RUN/audit-status-before.txt"
 printf '%s\n' "$RULES_BEFORE" >"$RUN/audit-rules-before.txt"
 log "step 3 run directory $RUN"
+check "scheduled jobs before the run: $SCHED_BEFORE"
 log "  core_pattern=$(cat /proc/sys/kernel/core_pattern) suid_dumpable=$(cat /proc/sys/fs/suid_dumpable) ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
 
 # ---- 4 audit rules -----------------------------------------------------
@@ -605,6 +667,22 @@ fi
 
 # ---- 8, 9, 10 ----------------------------------------------------------
 step8
+# nothing scheduled by the measured account during the run
+SCHED_AFTER=$(sched_check) && r=0 || r=$?
+case "$r" in
+0) check "scheduled jobs after the run: $SCHED_AFTER" ;;
+1)
+    check "scheduled jobs after the run: $SCHED_AFTER"
+    stop "the measured account scheduled a job: $SCHED_AFTER"
+    ;;
+*) die "scheduled jobs after the run: $SCHED_AFTER" ;;
+esac
+# framework: claims/ becomes root's, so nothing in it changes from here on
+if [ "$FRAMEWORK" -eq 1 ]; then
+    chown root:root "$RUN/claims"
+    chmod 0755 "$RUN/claims"
+    check "claims/ after step 8: $(stat -c '%U:%G %a' "$RUN/claims")"
+fi
 step9
 ANCHOR_SHA_END=$(sha256sum "$RUN/sink/anchor.pub" | cut -d' ' -f1)
 if [ "$ANCHOR_SHA_END" = "$ANCHOR_SHA" ]; then
@@ -628,12 +706,11 @@ fi
 # not read. Regular files only, never through a symlink, at most
 # LEAK_MAX bytes each; a file over the cap leaves the search incomplete,
 # which is a stop.
-# Framework: also claims/agent-log.jsonl, the agent's own log. Every
-# process of the measured account is gone by now (step 8), so nothing can
-# swap it between the check and the read; absent, it leaves the search
+# Framework: also claims/agent-log.jsonl, the agent's own log, opened once
+# by descriptor (a regular file with one link, in the root-owned claims/)
+# and copied through head -c to leak/agent-log.jsonl, which the search
+# then reads like any root-written file; absent or refused, the search is
 # incomplete.
-LEAK_EXTRA=()
-if [ "$FRAMEWORK" -eq 1 ]; then LEAK_EXTRA=("$RUN/claims/agent-log.jsonl"); fi
 LEAK_MAX=$((64 * 1024 * 1024))
 if [ "$LEAK" -eq 1 ]; then
     KEYHEX=$(od -An -v -tx1 "$RUN/leak/key.bin" | tr -d ' \n')
@@ -641,6 +718,15 @@ if [ "$LEAK" -eq 1 ]; then
     KEYB64NP=${KEYB64%%=*}
     found=0
     unsearched=0
+    if [ "$FRAMEWORK" -eq 1 ]; then
+        if open_single "$RUN/claims/agent-log.jsonl"; then
+            head -c $((LEAK_MAX + 1)) <&"$AFD" >"$RUN/leak/agent-log.jsonl"
+            exec {AFD}<&-
+        else
+            log "leak search: claims/agent-log.jsonl absent or not a regular file with one link; not read"
+            unsearched=1
+        fi
+    fi
     # every root-written file of the run except the export itself
     while IFS= read -r -d '' f; do
         [ "$f" = "$RUN/leak/key.bin" ] && continue
@@ -658,13 +744,12 @@ if [ "$LEAK" -eq 1 ]; then
         case "$raw" in *"$KEYHEX"*) log "LEAK raw key bytes in $f"; found=1 ;; esac
         if grep -aqiF -e "$KEYHEX" "$f"; then log "LEAK hex key in $f"; found=1; fi
         if grep -aqF -e "$KEYB64NP" "$f"; then log "LEAK base64 key in $f"; found=1; fi
-    done < <(find "$RUN" -path "$RUN/claims" -prune -o -type f -print0
-        if [ ${#LEAK_EXTRA[@]} -gt 0 ]; then printf '%s\0' "${LEAK_EXTRA[@]}"; fi)
+    done < <(find "$RUN" -path "$RUN/claims" -prune -o -type f -print0)
     if [ "$found" -eq 0 ] && [ "$unsearched" -ne 0 ]; then
         check "leak search: INCOMPLETE - a file could not be searched (see the log)"
         stop "the leak search could not read every file"
     elif [ "$found" -eq 0 ] && [ "$FRAMEWORK" -eq 1 ]; then
-        check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run and from claims/agent-log.jsonl (rest of claims/ excluded)"
+        check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run, including leak/agent-log.jsonl, the copy of claims/agent-log.jsonl (rest of claims/ excluded)"
     elif [ "$found" -eq 0 ]; then
         check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run (claims/ excluded)"
     else
@@ -678,15 +763,16 @@ sudo -n -u "$SUDO_USER" -- "$INST/demo-report" "$RUN" >"$RUN/report.txt"
 log "step 11 report written to $RUN/report.txt"
 cat "$RUN/report.txt"
 # The framework's own log, after the report and labelled as what it is.
-# The measured account wrote it: read as the operator, never through a
-# symbolic link, at most 1 MiB, printable ASCII only (no terminal control).
+# The measured account wrote it: opened once by descriptor (a regular file
+# with one link), read by the operator through head -c, at most 1 MiB,
+# printable ASCII only (no terminal control).
 if [ "$FRAMEWORK" -eq 1 ]; then
-    ALOG=$RUN/claims/agent-log.jsonl
     printf '\n==== the agent'"'"'s own account (untrusted): claims/agent-log.jsonl ====\n'
-    if [ -f "$ALOG" ] && [ ! -L "$ALOG" ]; then
-        sudo -n -u "$SUDO_USER" -- head -c 1048576 -- "$ALOG" | LC_ALL=C tr -cd '\11\12\40-\176' || true
+    if open_single "$RUN/claims/agent-log.jsonl"; then
+        sudo -n -u "$SUDO_USER" -- head -c 1048576 <&"$AFD" | LC_ALL=C tr -cd '\11\12\40-\176' || true
+        exec {AFD}<&-
     else
-        printf '(absent or not a regular file)\n'
+        printf '(absent, or not a regular file with one link)\n'
     fi
     printf '==== end of the agent'"'"'s own account ====\n'
 fi
