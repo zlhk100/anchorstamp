@@ -5,12 +5,23 @@
 #   sudo demo/run.sh --leak-test <scenario>
 #
 # Scenarios: honest shadow forger pipeline subagent burst evade longpath
-# tamper escalate.
+# tamper escalate (agentsim); framework framework-live (a real agent
+# framework, demo/framework/agent.py, in the venv /opt/anchorstamp-venv).
 #
 # Before running, as the operator (not root):
 #   cargo build --workspace --release
 #   cargo build -p anchorstamp-observe-audit --release --features leak-test \
 #       --target-dir target/leak-test           # only for --leak-test
+# Before a framework scenario, once, as root: demo/framework/install-venv.sh
+# For framework-live, Ollama serving qwen2.5:7b-instruct on 127.0.0.1:11434.
+#
+# The framework scenarios add: preflight checks of the venv (and, live, of
+# Ollama); the bridge, agent.py and requirements.lock installed; the venv's
+# `pip freeze --all` run as the measured account and hashed; in step 7 the
+# agent in place of agentsim (live: a 90 s budget and an ss sample of the
+# measured account's TCP peers each watch tick); the leak search also reads
+# claims/agent-log.jsonl; after the report, that log is printed as the
+# agent's own account.
 #
 # What it does, in order:
 #    1  preflight checks; record `auditctl -s` and `auditctl -l`
@@ -50,6 +61,11 @@ STATE=/var/lib/anchorstamp
 INSTALL_BASE=/usr/local/lib/anchorstamp-poc
 AUDITD_CONF=/etc/audit/auditd.conf
 SCENARIOS="honest shadow forger pipeline subagent burst evade longpath tamper escalate"
+FRAMEWORK_SCENARIOS="framework framework-live"
+VENV=/opt/anchorstamp-venv
+OLLAMA=127.0.0.1:11434
+LIVE_MODEL=qwen2.5:7b-instruct
+LIVE_BUDGET_S=90
 
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 TREE=$(cd "$HERE/.." && pwd -P)
@@ -86,10 +102,18 @@ if [ "${1:-}" = "--leak-test" ]; then
 fi
 [ $# -eq 1 ] || die "usage: sudo demo/run.sh [--leak-test] <scenario>"
 SCENARIO=$1
+FRAMEWORK=0
+LIVE=0
 case " $SCENARIOS " in
 *" $SCENARIO "*) ;;
-*) die "unknown scenario '$SCENARIO'; one of: $SCENARIOS" ;;
+*)
+    case " $FRAMEWORK_SCENARIOS " in
+    *" $SCENARIO "*) FRAMEWORK=1 ;;
+    *) die "unknown scenario '$SCENARIO'; one of: $SCENARIOS $FRAMEWORK_SCENARIOS" ;;
+    esac
+    ;;
 esac
+if [ "$SCENARIO" = framework-live ]; then LIVE=1; fi
 
 # ---- 1 preflight -------------------------------------------------------
 log "step 1 preflight; scenario=$SCENARIO leak_test=$LEAK"
@@ -152,6 +176,31 @@ for f in "$OBS_SRC" "$REL/agentsim" "$REL/demo-report"; do
 done
 log "preflight binaries: ok"
 
+# framework: the bridge built; the venv present, a plain directory owned
+# by root, nothing under it owned by anyone else or writable by group or
+# other (symbolic links excepted: their mode is not used); live: Ollama
+# answers on $OLLAMA and lists the model, asked as the operator.
+if [ "$FRAMEWORK" -eq 1 ]; then
+    for f in "$REL/anchorstamp-exec" "$HERE/framework/agent.py" "$HERE/framework/requirements.lock"; do
+        if [ ! -f "$f" ] || [ -L "$f" ]; then die "missing $f — build it first"; fi
+    done
+    if [ -L "$VENV" ] || [ ! -d "$VENV" ]; then die "$VENV is not a directory; run demo/framework/install-venv.sh"; fi
+    [ "$(stat -c '%u:%g' "$VENV")" = "0:0" ] || die "$VENV not owned by root:root"
+    BAD=$(find "$VENV" \( ! -uid 0 -o ! -gid 0 \) -print -quit)
+    [ -z "$BAD" ] || die "$VENV has an entry not owned by root:root: $BAD"
+    BAD=$(find "$VENV" ! -type l -perm /022 -print -quit)
+    [ -z "$BAD" ] || die "$VENV has an entry writable by group or other: $BAD"
+    [ -x "$VENV/bin/python" ] || die "$VENV/bin/python is not executable"
+    log "preflight venv: ok $VENV root:root, nothing group- or other-writable"
+    if [ "$LIVE" -eq 1 ]; then
+        MODELS=$(sudo -n -u "$SUDO_USER" -- curl -sS --max-time 5 "http://$OLLAMA/v1/models") ||
+            die "Ollama does not answer on $OLLAMA"
+        printf '%s' "$MODELS" | grep -Eq "\"id\": *\"${LIVE_MODEL//./\\.}\"" ||
+            die "Ollama on $OLLAMA does not list $LIVE_MODEL"
+        log "preflight ollama: ok $OLLAMA lists $LIVE_MODEL"
+    fi
+fi
+
 # current rules captured; none may be loaded. An existing exit-list rule
 # matches before ours and stamps its own key, so the observer would drop
 # those records; task and exclude rules can suppress records outright.
@@ -208,8 +257,25 @@ copy_in "$REL/demo-report" "$INST/demo-report" 0755
 for s in $SCENARIOS; do
     copy_in "$HERE/scenarios/$s.txt" "$INST/scenarios/$s.txt" 0644
 done
+if [ "$FRAMEWORK" -eq 1 ]; then
+    copy_in "$REL/anchorstamp-exec" "$INST/anchorstamp-exec" 0755
+    copy_in "$HERE/framework/agent.py" "$INST/agent.py" 0644
+    copy_in "$HERE/framework/requirements.lock" "$INST/requirements.lock" 0644
+fi
 log "step 2 installed into $INST"
 while IFS= read -r l; do log "  sha256 $l"; done < <(cd "$INST" && sha256sum anchorstamp-observe-audit agentsim demo-report scenarios/*.txt)
+if [ "$FRAMEWORK" -eq 1 ]; then
+    while IFS= read -r l; do log "  sha256 $l"; done < <(cd "$INST" && sha256sum anchorstamp-exec agent.py requirements.lock)
+    # What the measured account's interpreter sees installed; before the
+    # rules are added, so it is not part of the observed run.
+    FREEZE=$(cd / && sudo -n -u "$AGENT" -- env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
+        "$VENV/bin/python" -I -B -m pip freeze --all --disable-pip-version-check --no-input) ||
+        die "pip freeze as $AGENT failed"
+    while IFS= read -r l; do log "  pip freeze --all ($AGENT): $l"; done <<<"$FREEZE"
+    log "  sha256 $(printf '%s\n' "$FREEZE" | sha256sum | cut -d' ' -f1)  pip freeze --all as $AGENT"
+    LEFT=$(pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") || true
+    [ -z "$LEFT" ] || die "processes of $AGENT remain after pip freeze: $(printf '%s' "$LEFT" | tr '\n' ' ')"
+fi
 
 # ---- 3 run directory ---------------------------------------------------
 [ -d "$STATE" ] || mkdir -m 0755 "$STATE"
@@ -462,14 +528,42 @@ log "step 6 ok"
 # observer's stream and delete the host's oldest log, so the size is
 # watched and the account killed at 3/4 of max_log_file. The observer
 # ending early is also a stop.
-sudo -n -u "$AGENT" -- setsid -w "$INST/agentsim" "$INST/scenarios/$SCENARIO.txt" "$RUN" \
+# The framework: an empty environment but for PATH, LANG and the two
+# Hugging Face switches; the venv's interpreter isolated (-I) and writing no
+# bytecode (-B); the bridge by absolute path. Live: the model on Ollama.
+if [ "$FRAMEWORK" -eq 1 ]; then
+    AGENT_NAME=agent.py
+    MODEL=scripted
+    if [ "$LIVE" -eq 1 ]; then MODEL="openai:http://$OLLAMA/v1#$LIVE_MODEL"; fi
+    AGENT_CMD=(setsid -w env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
+        /opt/anchorstamp-venv/bin/python -I -B "$INST/agent.py" "$RUN" \
+        --bridge "$INST/anchorstamp-exec" --model "$MODEL")
+else
+    AGENT_NAME=agentsim
+    AGENT_CMD=(setsid -w "$INST/agentsim" "$INST/scenarios/$SCENARIO.txt" "$RUN")
+fi
+if [ "$FRAMEWORK" -eq 1 ]; then log "step 7 command: sudo -n -u $AGENT -- ${AGENT_CMD[*]}"; fi
+AGENT_T0=$(date +%s%N)
+sudo -n -u "$AGENT" -- "${AGENT_CMD[@]}" \
     </dev/null >"$RUN/agent.log" 2>&1 &
 AGENT_PID=$!
-log "step 7 agentsim started via sudo pid=$AGENT_PID"
+log "step 7 $AGENT_NAME started via sudo pid=$AGENT_PID"
 PEAK=0
+SS_TICKS=0
+SS_FOREIGN=0
 while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/$AGENT_PID/status" 2>/dev/null)" != Z ]; do
     NOW=$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)
     [ "$NOW" -le "$PEAK" ] || PEAK=$NOW
+    # live: the measured account's TCP sockets whose peer is not Ollama
+    if [ "$LIVE" -eq 1 ]; then
+        SS_TICKS=$((SS_TICKS + 1))
+        while IFS= read -r l; do
+            [ -n "$l" ] || continue
+            SS_FOREIGN=$((SS_FOREIGN + 1))
+            log "step 7 ss: measured-account peer other than $OLLAMA: $l"
+        done < <(ss -tnpeH 2>/dev/null | awk -v u="uid:$AGENT_UID" -v ok="$OLLAMA" \
+            '{ for (i = 6; i <= NF; i++) if ($i == u) { if ($5 != ok) print; break } }')
+    fi
     if [ "$NOW" -ge "$WATCH_LIMIT" ]; then
         stop "audit log reached $NOW bytes (3/4 of max_log_file is $WATCH_LIMIT); measured account killed"
         kill_agents || true
@@ -483,10 +577,23 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
     sleep 0.2
 done
 wait "$AGENT_PID" && AGENT_RC=0 || AGENT_RC=$?
-log "step 7 agentsim exit=$AGENT_RC; audit log peak size seen $PEAK of $WATCH_LIMIT"
+AGENT_MS=$((($(date +%s%N) - AGENT_T0) / 1000000))
+log "step 7 $AGENT_NAME exit=$AGENT_RC; audit log peak size seen $PEAK of $WATCH_LIMIT"
 check "audit log size during the run: peak $PEAK bytes, stop at $WATCH_LIMIT"
-check "agentsim exit status: $AGENT_RC (3 = a refusal test succeeded)"
-if [ "$AGENT_RC" -eq 3 ]; then stop "a refusal test succeeded"; fi
+if [ "$FRAMEWORK" -eq 0 ]; then
+    check "agentsim exit status: $AGENT_RC (3 = a refusal test succeeded)"
+    if [ "$AGENT_RC" -eq 3 ]; then stop "a refusal test succeeded"; fi
+else
+    check "agent.py exit status: $AGENT_RC (0 = a final answer); elapsed ${AGENT_MS} ms"
+fi
+if [ "$LIVE" -eq 1 ]; then
+    if [ "$AGENT_MS" -le $((LIVE_BUDGET_S * 1000)) ]; then
+        check "live run elapsed ${AGENT_MS} ms: within the ${LIVE_BUDGET_S} s budget"
+    else
+        check "live run elapsed ${AGENT_MS} ms: OVER the ${LIVE_BUDGET_S} s budget (show the scripted run)"
+    fi
+    check "ss -tnpe samples: $SS_TICKS; measured-account TCP peers other than $OLLAMA: $SS_FOREIGN"
+fi
 
 # ---- 8, 9, 10 ----------------------------------------------------------
 step8
@@ -513,6 +620,12 @@ fi
 # not read. Regular files only, never through a symlink, at most
 # LEAK_MAX bytes each; a file over the cap leaves the search incomplete,
 # which is a stop.
+# Framework: also claims/agent-log.jsonl, the agent's own log. Every
+# process of the measured account is gone by now (step 8), so nothing can
+# swap it between the check and the read; absent, it leaves the search
+# incomplete.
+LEAK_EXTRA=()
+if [ "$FRAMEWORK" -eq 1 ]; then LEAK_EXTRA=("$RUN/claims/agent-log.jsonl"); fi
 LEAK_MAX=$((64 * 1024 * 1024))
 if [ "$LEAK" -eq 1 ]; then
     KEYHEX=$(od -An -v -tx1 "$RUN/leak/key.bin" | tr -d ' \n')
@@ -537,10 +650,13 @@ if [ "$LEAK" -eq 1 ]; then
         case "$raw" in *"$KEYHEX"*) log "LEAK raw key bytes in $f"; found=1 ;; esac
         if grep -aqiF -e "$KEYHEX" "$f"; then log "LEAK hex key in $f"; found=1; fi
         if grep -aqF -e "$KEYB64NP" "$f"; then log "LEAK base64 key in $f"; found=1; fi
-    done < <(find "$RUN" -path "$RUN/claims" -prune -o -type f -print0)
+    done < <(find "$RUN" -path "$RUN/claims" -prune -o -type f -print0
+        if [ ${#LEAK_EXTRA[@]} -gt 0 ]; then printf '%s\0' "${LEAK_EXTRA[@]}"; fi)
     if [ "$found" -eq 0 ] && [ "$unsearched" -ne 0 ]; then
         check "leak search: INCOMPLETE - a file could not be searched (see the log)"
         stop "the leak search could not read every file"
+    elif [ "$found" -eq 0 ] && [ "$FRAMEWORK" -eq 1 ]; then
+        check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run and from claims/agent-log.jsonl (rest of claims/ excluded)"
     elif [ "$found" -eq 0 ]; then
         check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run (claims/ excluded)"
     else
@@ -553,6 +669,19 @@ fi
 sudo -n -u "$SUDO_USER" -- "$INST/demo-report" "$RUN" >"$RUN/report.txt"
 log "step 11 report written to $RUN/report.txt"
 cat "$RUN/report.txt"
+# The framework's own log, after the report and labelled as what it is.
+# The measured account wrote it: read as the operator, never through a
+# symbolic link, at most 1 MiB, printable ASCII only (no terminal control).
+if [ "$FRAMEWORK" -eq 1 ]; then
+    ALOG=$RUN/claims/agent-log.jsonl
+    printf '\n==== the agent'"'"'s own account (untrusted): claims/agent-log.jsonl ====\n'
+    if [ -f "$ALOG" ] && [ ! -L "$ALOG" ]; then
+        sudo -n -u "$SUDO_USER" -- head -c 1048576 -- "$ALOG" | LC_ALL=C tr -cd '\11\12\40-\176' || true
+    else
+        printf '(absent or not a regular file)\n'
+    fi
+    printf '==== end of the agent'"'"'s own account ====\n'
+fi
 if [ "$STOPPED" -ne 0 ]; then
     log "run finished WITH A STOP — see above"
     exit 1

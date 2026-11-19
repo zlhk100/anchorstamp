@@ -1,0 +1,57 @@
+#!/bin/bash
+# demo/framework/install-venv.sh — create the agent's venv, once, as root.
+#
+#   sudo demo/framework/install-venv.sh
+#
+# Creates /opt/anchorstamp-venv with the system python3 and installs
+# exactly demo/framework/requirements.lock into it: every file checked
+# against its pinned sha256 (--require-hashes), no dependency resolution
+# (--no-deps), binary wheels only, so no package code runs at install.
+# Then everything under it is made root:root and not group- or
+# other-writable, so the measured account can read and execute it but
+# change nothing. Prints what it did; capture the output as its log.
+#
+# Refuses if /opt/anchorstamp-venv exists in any form. It never removes or
+# overwrites anything; to rebuild, the operator removes the venv first.
+set -eu
+umask 022
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
+VENV=/opt/anchorstamp-venv
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+LOCK=$HERE/requirements.lock
+
+say() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+die() {
+    say "REFUSED: $*"
+    exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || die "not root"
+if [ -e "$VENV" ] || [ -L "$VENV" ]; then die "$VENV exists; this script never replaces it"; fi
+if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then die "$LOCK is not a regular file"; fi
+python3 -I -B -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "python3 is older than 3.10"
+
+say "python3: $(python3 -I -B -c 'import sys; print(sys.version.split()[0])') at $(readlink -f "$(command -v python3)")"
+say "lock: $LOCK sha256 $(sha256sum "$LOCK" | cut -d' ' -f1)"
+
+say "creating $VENV"
+python3 -I -B -m venv "$VENV"
+say "installing the lock"
+"$VENV/bin/python" -I -B -m pip install --no-input --disable-pip-version-check --no-cache-dir \
+    --require-hashes --no-deps --only-binary :all: -r "$LOCK"
+
+chown -R root:root "$VENV"
+chmod -R go-w "$VENV"
+
+BAD=$(find "$VENV" \( ! -uid 0 -o ! -gid 0 \) -print -quit)
+[ -z "$BAD" ] || die "entry not owned by root:root: $BAD"
+BAD=$(find "$VENV" ! -type l -perm /022 -print -quit)
+[ -z "$BAD" ] || die "entry writable by group or other: $BAD"
+say "ownership: root:root throughout; nothing group- or other-writable"
+say "pip freeze --all:"
+"$VENV/bin/python" -I -B -m pip freeze --all --disable-pip-version-check --no-input
+say "done"
