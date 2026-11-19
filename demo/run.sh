@@ -753,6 +753,16 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
             esac
         done
     fi
+    # framework: free space under the audit log at least one max_log_file
+    if [ "$FRAMEWORK" -eq 1 ]; then
+        FREE_NOW=$(df -B1 --output=avail "$LOG_FILE" 2>/dev/null | tail -n1 | tr -d ' ')
+        case "$FREE_NOW" in '' | *[!0-9]*) FREE_NOW=0 ;; esac
+        if [ "$FREE_NOW" -lt $((MAX_MB * 1024 * 1024)) ]; then
+            stop "free space under $LOG_FILE fell to $FREE_NOW bytes, below max_log_file; measured account killed"
+            kill_agents || true
+            break
+        fi
+    fi
     # live: a hard limit at twice the budget
     if [ "$LIVE" -eq 1 ] && [ $((($(date +%s%N) - AGENT_T0) / 1000000)) -ge $((LIVE_HARD_S * 1000)) ]; then
         stop "live run over the hard limit (${LIVE_HARD_S} s); measured account killed"
