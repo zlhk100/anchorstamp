@@ -60,9 +60,9 @@ A log without a verdict is a story the agent told about itself.
 
 | Tier | What exists |
 |---|---|
-| **Measured** | A proof of concept on one Linux laptop (kernel 6.8): eleven live scenarios, all results below. |
+| **Measured** | A proof of concept on one Linux laptop (kernel 6.8): eleven live scenarios with a simulated agent, and a real agent framework (smolagents) run through a command-line bridge. All results below. |
 | **Specified** | Record layout, signature and chaining, reader rules, conformance vectors (first half of the specification). |
-| **Planned** | The production rule for matching a library's view of a process to the kernel's; measuring how often that rule collides under concurrent execution; anchoring the observer's record to an outside log; a run against a real open-source agent framework. |
+| **Planned** | The production rule for matching a library's view of a process to the kernel's; measuring how often that rule collides under concurrent execution; anchoring the observer's record to an outside log; showing on every run that the framework's network block holds. |
 
 ### What the proof of concept showed
 
@@ -80,6 +80,8 @@ running as an unprivileged account that has no sudo and no terminal.
 | burst of 200 | 200 of 200 corroborated |
 | exec by file descriptor, 1,672-byte path | both observed |
 | agent tries to alter the evidence or the audit rules | every attempt refused by the kernel or the filesystem |
+| real framework, scripted plan (smolagents 1.26) | every command claimed through the bridge corroborated; the three programs a plugin ran directly (`uname`, `id`, `uptime`) appear as **unclaimed**, while the framework's own log names only the tool call |
+| real framework, local model (qwen2.5:7b-instruct via Ollama) | every command claimed through the bridge corroborated, including one that exited 1: the observer shows a program ran, not that it succeeded |
 
 Across all runs: zero audit records lost, audit rules identical before and
 after, the observer's signing key absent from every output it produced.
@@ -126,10 +128,13 @@ crates/anchorstamp-core           record types and their byte layout (no_std, no
 crates/anchorstamp                the library an agent links: run a command, return a claim
 crates/anchorstamp-verify         the reader: join claims to observations, return verdicts
 crates/anchorstamp-observe-audit  the reference observer: Linux audit to signed, chained records
+crates/anchorstamp-exec           a command-line bridge, so a framework in any language can run a command through the library
 crates/agentsim                   a deterministic agent-framework simulator for the scenarios
 crates/demo-report                the human-readable report
 demo/                             the run harness and the scenarios
-docs/                             why this exists, and a walkthrough of the demo
+demo/framework/                   a real agent framework (smolagents) as the measured party
+scripts/                          the check target of the coding standard
+docs/                             why this exists, a walkthrough of the demo, and the coding standard
 ```
 
 ## Running the demo
@@ -141,7 +146,13 @@ See [docs/demo.md](docs/demo.md) before running it.
 ```
 cargo build --workspace --release
 sudo demo/run.sh honest      # or: shadow, forger, pipeline, subagent, burst, …
+sudo demo/run.sh framework   # smolagents with a scripted plan, no network
 ```
+
+Every scenario requires the agent account to be barred from scheduling jobs
+(listed in `/etc/cron.deny`). The framework scenarios also need a one-time
+venv, `sudo demo/framework/install-venv.sh`, and the unified cgroup
+hierarchy (cgroup v2).
 
 ---
 
@@ -153,7 +164,7 @@ The most useful contributions right now, in order:
    one seam, and a second one is the test of whether the seam is right.
 2. **Challenges to the threat model.** If you can make the reader print
    `corroborated` for something that did not happen, open an issue.
-3. **A run against a real agent framework** you use.
+3. **A run under the agent framework you use**, through `anchorstamp-exec`.
 
 ## Licence
 

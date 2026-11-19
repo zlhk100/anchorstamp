@@ -32,9 +32,10 @@ the reader     runs as the operator after the agent has been stopped.
                says, for each, what the evidence supports.
 ```
 
-The agent is a simulator, not a real framework. It reproduces the runtime
+In most scenarios the agent is a simulator. It reproduces the runtime
 shape that matters here: tool calls become separate processes, and
-sub-agents share one process. A real framework is the next step.
+sub-agents share one process. The `framework` scenarios run a real agent
+framework instead; see the last section below.
 
 ## Running it
 
@@ -44,7 +45,24 @@ sudo demo/run.sh honest
 ```
 
 Scenarios: `honest`, `shadow`, `forger`, `pipeline`, `subagent`, `burst`,
-`evade`, `longpath`, `tamper`, `escalate`.
+`evade`, `longpath`, `tamper`, `escalate`, and `framework`,
+`framework-live`, `framework-netcheck`.
+
+Every scenario requires the agent account to be barred from scheduling
+jobs: listed in `/etc/cron.deny` (or absent from `cron.allow` where that
+file exists). A job scheduled by the agent would run outside the observed
+run.
+
+The framework scenarios run smolagents from a venv at
+`/opt/anchorstamp-venv`, created once with
+`sudo demo/framework/install-venv.sh` from the hash-pinned lock. They
+start the agent inside a transient systemd scope that allows no network
+beyond 127.0.0.1, which needs the unified cgroup hierarchy (cgroup v2).
+`framework-live` also needs a local model server: Ollama on
+127.0.0.1:11434 serving `qwen2.5:7b-instruct`. `framework-netcheck` tests
+the network block itself; on the laptop above it does not pass yet: the
+blocked connection timed out instead of being refused, and the harness
+accepts only a refusal as proof.
 
 The harness refuses to start unless the host is in a known state: audit
 enabled with no other rules loaded, the agent account present and idle,
@@ -165,6 +183,51 @@ labels is, and none can be: the sub-agents are threads in one process, so
 the kernel sees one actor. The label is something the agent says about
 itself. The report corroborates the action and leaves the label as the
 agent's claim.
+
+### A real framework: the plugin nobody logged
+
+smolagents 1.26 ran a scripted plan with two tools. `run_command` goes
+through `anchorstamp-exec`, so every program it runs leaves a claim.
+`system_report` is a convenience plugin that runs `uname`, `id` and
+`uptime` directly, the way many community tools do.
+
+The framework's own log, trimmed:
+
+```
+{"tool": "run_command", "argv": ["/usr/bin/whoami"], "exit": 0, …}
+{"tool": "run_command", "argv": ["/usr/bin/ls", "/etc/ssh"], "exit": 0, …}
+{"tool": "system_report", "argv": null, "exit": 0, "bridge": "", …}
+{"tool": "run_command", "argv": ["/usr/bin/df", "-h", "/"], "exit": 0, …}
+```
+
+The report:
+
+```
+claims (3)
+  #1 pid 179318  CORROBORATED …   seen: index 5 exe /usr/bin/whoami
+  #2 pid 179326  CORROBORATED …   seen: index 7 exe /usr/bin/ls
+  #3 pid 179331  CORROBORATED …   seen: index 12 exe /usr/bin/df
+
+unclaimed execs (9)
+  other execs of the measured account (9)
+    …
+    index 8 pid 179327 … exe /usr/bin/uname
+    index 9 pid 179328 … exe /usr/bin/id
+    index 10 pid 179329 … exe /usr/bin/uptime
+    …
+```
+
+The log records the plugin call with no arguments and nothing about what
+it spawned. The observer recorded all three programs. The other unclaimed
+entries are the harness starting the agent, the Python interpreter, and
+the bridge itself: the bridge runs inside the agent's account and is no
+more trusted than the library.
+
+With a local model (`qwen2.5:7b-instruct` via Ollama) in place of the
+script, every command the model ran through the bridge was corroborated,
+including `cat /etc/ssh`, which exited 1. The observer shows that a
+program ran, not that it succeeded. The model's final answer said disk
+space still had to be checked; the observer's record holds no `df`.
 
 ## What every report also states
 

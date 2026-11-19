@@ -158,12 +158,15 @@ Linux host, with the results above. The first half of a specification is
 written: record layout, signatures, chaining and the reader's rules, with
 conformance vectors.
 
+A real agent framework, smolagents, now runs through a command-line
+bridge under the same observer, and a plugin's unlogged programs show up as
+unclaimed, as they do with the simulator.
+
 What is not yet shown: the production rule that matches a library's view
 of a process to the kernel's view across process namespaces; how often that
-rule collides when many commands start at once; anchoring the observer's
-record to a party outside the machine; and a run against a real
-open-source agent framework rather than a simulator. Each of those is
-planned work, not a settled claim.
+rule collides when many commands start at once; and anchoring the
+observer's record to a party outside the machine. Each of those is planned
+work, not a settled claim.
 
 The most useful thing anyone outside this project can do right now is try
 to make the reader say *corroborated* for something that did not happen,
