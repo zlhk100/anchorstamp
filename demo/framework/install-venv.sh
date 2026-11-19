@@ -11,8 +11,14 @@
 # other-writable, so the measured account can read and execute it but
 # change nothing. Prints what it did; capture the output as its log.
 #
+# The lock sits in a tree the operator owns, so it is copied once, through
+# one descriptor, into a root-owned 0600 file in a root-owned 0700
+# temporary directory; the copy must hold nothing but pinned requirements
+# and their hashes, and only the copy is installed from.
+#
 # Refuses if /opt/anchorstamp-venv exists in any form. It never removes or
-# overwrites anything; to rebuild, the operator removes the venv first.
+# overwrites anything but its own temporary copy of the lock; to rebuild,
+# the operator removes the venv first.
 set -eu
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -36,13 +42,32 @@ if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then die "$LOCK is not a regular file"; f
 python3 -I -B -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "python3 is older than 3.10"
 
 say "python3: $(python3 -I -B -c 'import sys; print(sys.version.split()[0])') at $(readlink -f "$(command -v python3)")"
-say "lock: $LOCK sha256 $(sha256sum "$LOCK" | cut -d' ' -f1)"
+
+# the lock: copied through one descriptor that must name the file checked
+TMP=$(mktemp -d)
+trap 'rm -rf -- "$TMP"' EXIT
+[ "$(stat -c '%u:%g %a' "$TMP")" = "0:0 700" ] || die "$TMP is not root:root 0700"
+COPY=$TMP/requirements.lock
+exec {fd}<"$LOCK" || die "$LOCK cannot be opened"
+seen=$(stat -c '%F %d:%i' -- "$LOCK")
+held=$(stat -L -c '%F %d:%i' "/proc/self/fd/$fd")
+if [ -L "$LOCK" ] || [ "$seen" != "$held" ]; then die "$LOCK changed while being opened"; fi
+case "$held" in "regular file "*) ;; *) die "$LOCK is not a regular file" ;; esac
+(umask 077 && cat <&"$fd" >"$COPY") || die "copying $LOCK failed"
+exec {fd}<&-
+chown root:root "$COPY"
+chmod 0600 "$COPY"
+[ "$(stat -c '%u:%g %a' "$COPY")" = "0:0 600" ] || die "$COPY is not root:root 0600"
+# every line: blank, a comment, name==version, or a sha256 hash continuation
+BAD=$(grep -nvE '^[[:space:]]*(#.*)?$|^[A-Za-z0-9][A-Za-z0-9._-]*==[A-Za-z0-9][A-Za-z0-9.+!_-]*( \\)?$|^[[:space:]]+--hash=sha256:[0-9a-f]{64}( \\)?$' "$COPY" | head -n3) || true
+[ -z "$BAD" ] || die "$LOCK holds a line that is not a pinned requirement or a hash: $BAD"
+say "lock: copied from $LOCK; copy sha256 $(sha256sum "$COPY" | cut -d' ' -f1)"
 
 say "creating $VENV"
 python3 -I -B -m venv "$VENV"
 say "installing the lock"
 "$VENV/bin/python" -I -B -m pip install --no-input --disable-pip-version-check --no-cache-dir \
-    --require-hashes --no-deps --only-binary :all: -r "$LOCK"
+    --require-hashes --no-deps --only-binary :all: -r "$COPY"
 
 chown -R root:root "$VENV"
 chmod -R go-w "$VENV"
