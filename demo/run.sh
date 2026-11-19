@@ -75,6 +75,10 @@ LIVE_HARD_S=$((2 * LIVE_BUDGET_S))
 CRON_SPOOL=/var/spool/cron/crontabs
 AT_SPOOL=/var/spool/cron/atjobs
 ATD=/usr/sbin/atd
+CRON_ALLOW=/etc/cron.allow
+CRON_DENY=/etc/cron.deny
+AT_ALLOW=/etc/at.allow
+AT_DENY=/etc/at.deny
 
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 TREE=$(cd "$HERE/.." && pwd -P)
@@ -147,6 +151,52 @@ sched_check() {
         echo "$cron; at not installed (no atq, no atd, no spool): no at job can exist"
     fi
     return 0
+}
+
+# Whether user $1 is listed in file $2 (one name per line).
+listed() {
+    [ -f "$2" ] && awk -v u="$1" '{ sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") } $0 == u { f = 1 } END { exit !f }' "$2"
+}
+
+# Whether the measured account is barred from creating cron jobs, and at
+# jobs when at is installed: when the allow file exists, by not being in
+# it; otherwise by being in the deny file. Prints one line; returns 0
+# barred, 1 not.
+sched_barred() {
+    local cron at
+    if command -v crontab >/dev/null 2>&1; then
+        if [ -e "$CRON_ALLOW" ]; then
+            if listed "$AGENT" "$CRON_ALLOW"; then
+                echo "$AGENT is in $CRON_ALLOW: it can create cron jobs"
+                return 1
+            fi
+            cron="cron: $CRON_ALLOW exists and does not list $AGENT"
+        elif listed "$AGENT" "$CRON_DENY"; then
+            cron="cron: $AGENT is in $CRON_DENY"
+        else
+            echo "$AGENT can create cron jobs: no $CRON_ALLOW and not in $CRON_DENY (add it there)"
+            return 1
+        fi
+    else
+        cron="cron: not installed"
+    fi
+    if command -v at >/dev/null 2>&1 || command -v atq >/dev/null 2>&1; then
+        if [ -e "$AT_ALLOW" ]; then
+            if listed "$AGENT" "$AT_ALLOW"; then
+                echo "$AGENT is in $AT_ALLOW: it can create at jobs"
+                return 1
+            fi
+            at="at: $AT_ALLOW exists and does not list $AGENT"
+        elif listed "$AGENT" "$AT_DENY"; then
+            at="at: $AGENT is in $AT_DENY"
+        else
+            echo "$AGENT can create at jobs: no $AT_ALLOW and not in $AT_DENY (add it there)"
+            return 1
+        fi
+    else
+        at="at: not installed"
+    fi
+    echo "$cron; $at"
 }
 
 # Open $1 for reading on descriptor AFD, only if it is a regular file, not
@@ -242,6 +292,9 @@ log "preflight account processes: ok none"
 SCHED_BEFORE=$(sched_check) && r=0 || r=$?
 [ "$r" -eq 0 ] || die "scheduled jobs: $SCHED_BEFORE"
 log "preflight scheduled jobs: ok $SCHED_BEFORE"
+# and it cannot create any
+BARRED=$(sched_barred) || die "scheduling: $BARRED"
+log "preflight scheduling barred: ok $BARRED"
 
 # release binaries built
 REL=$TREE/target/release
@@ -394,6 +447,7 @@ printf '%s\n' "$STATUS_BEFORE" >"$RUN/audit-status-before.txt"
 printf '%s\n' "$RULES_BEFORE" >"$RUN/audit-rules-before.txt"
 log "step 3 run directory $RUN"
 check "scheduled jobs before the run: $SCHED_BEFORE"
+check "scheduling barred for the measured account: $BARRED"
 log "  core_pattern=$(cat /proc/sys/kernel/core_pattern) suid_dumpable=$(cat /proc/sys/fs/suid_dumpable) ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
 
 # ---- 4 audit rules -----------------------------------------------------
@@ -729,6 +783,17 @@ case "$r" in
     ;;
 *) die "scheduled jobs after the run: $SCHED_AFTER" ;;
 esac
+# and no process of the account came back since step 8: look, kill again,
+# look again
+LEFT=$( (pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") | sort -u | tr '\n' ' ') || true
+if [ -n "$LEFT" ]; then stop "processes of $AGENT appeared after step 8: $LEFT"; fi
+kill_agents && r=0 || r=$?
+LEFT2=$( (pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") | sort -u | tr '\n' ' ') || true
+if [ -n "$LEFT2" ]; then
+    AGENTS_REMAIN=1
+    stop "processes of $AGENT remain after a second kill: $LEFT2"
+fi
+check "agent processes after the scheduled-jobs check: before kill ${LEFT:-none}; after ${LEFT2:-none} (kill rc=$r)"
 # framework: claims/ becomes root's, so nothing in it changes from here on
 if [ "$FRAMEWORK" -eq 1 ]; then
     chown root:root "$RUN/claims"
