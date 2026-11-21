@@ -307,4 +307,69 @@ else
     fi
 fi
 
+# Kernel C: the module under observer/kernel follows the kernel's own
+# conventions (coding-style.rst, checkpatch --strict, sparse), and its
+# writable statics are listed like the Rust ones.
+KDIR=${KDIR:-/lib/modules/$(uname -r)/build}
+KMOD_DIRS=(observer/kernel/anchorstamp_exec)
+KCC=${KCC:-x86_64-linux-gnu-gcc-12}
+# Sources only: the build generates <module>.mod.c beside them.
+mapfile -t kc < <(find "${KMOD_DIRS[@]}" -type f -name '*.c' ! -name '*.mod.c' 2>/dev/null | sort)
+
+# CS-KC-1  checkpatch --strict clean.
+checkpatch=$KDIR/scripts/checkpatch.pl
+if [ ${#kc[@]} -eq 0 ]; then
+    report CS-KC-1 PASS "no kernel C yet"
+elif [ ! -f "$checkpatch" ]; then
+    report CS-KC-1 MISSING "$checkpatch absent"
+elif perl "$checkpatch" --strict --no-tree --quiet -f "${kc[@]}" >&2; then
+    report CS-KC-1 PASS "${kc[*]}"
+else
+    report CS-KC-1 FAIL "${kc[*]}"
+fi
+
+# CS-KC-2  sparse clean: a C=2 build prints nothing from the checker.
+if [ ${#kc[@]} -eq 0 ]; then
+    report CS-KC-2 PASS "no kernel C yet"
+elif ! have sparse; then
+    report CS-KC-2 MISSING "sparse not installed"
+elif ! have "$KCC"; then
+    report CS-KC-2 MISSING "$KCC not installed"
+else
+    bad=()
+    for d in "${KMOD_DIRS[@]}"; do
+        out=$(make -s -C "$KDIR" M="$PWD/$d" CC="$KCC" C=2 modules 2>&1) || bad+=("$d:build")
+        if grep -E ': (warning|error):' <<<"$out" >&2; then bad+=("$d"); fi
+    done
+    if [ ${#bad[@]} -eq 0 ]; then
+        report CS-KC-2 PASS "${KMOD_DIRS[*]}"
+    else
+        report CS-KC-2 FAIL "${bad[*]}"
+    fi
+fi
+
+# CS-KC-3  every writable file-scope static in kernel C is on the allowlist.
+# Writable: a line-start `static` definition that is not const and not a
+# function (no parenthesis before its `=` or `;`), or a static DEFINE_*().
+bad=()
+n=0
+for f in "${kc[@]}"; do
+    while IFS= read -r sym; do
+        [ -n "$sym" ] || continue
+        n=$((n + 1))
+        awk -v s="$sym" -v f="$f" \
+            '!/^#/ && $1 == s && $2 == f && NF >= 3 { ok = 1 } END { exit !ok }' \
+            "$ALLOWLIST" || bad+=("$sym@$f")
+    done < <(sed -nE \
+        -e '/^static[[:space:]]+(const[[:space:]]|.*[[:space:]]const[[:space:]])/d' \
+        -e 's/^static[[:space:]]+DEFINE_[A-Z0-9_]+\(([A-Za-z_][A-Za-z0-9_]*).*/\1/p' \
+        -e 's/^static[[:space:]][^(=;]*[^A-Za-z0-9_]([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*(\[[^]]*\])?[[:space:]]*[=;].*/\1/p' \
+        "$f")
+done
+if [ ${#bad[@]} -eq 0 ]; then
+    report CS-KC-3 PASS "$n writable static(s), all listed"
+else
+    report CS-KC-3 FAIL "not listed: ${bad[*]}"
+fi
+
 exit "$fail"

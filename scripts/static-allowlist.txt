@@ -1,3 +1,8 @@
 # Writable statics of this workspace: <symbol> <file> <reason>
 # Checked by scripts/check.sh (CS-RS-4). One line per static.
 TERM crates/anchorstamp-observe-audit/src/main.rs set by the SIGTERM handler, read by the main loop; a signal handler can reach no other state
+asx_tp observer/kernel/anchorstamp_exec/anchorstamp_exec.c the sched_process_exec tracepoint, set by init before the probe is registered and used by exit to unregister it; the probe signature carries no context to hold it
+asx_wq observer/kernel/anchorstamp_exec/anchorstamp_exec.c the ordered workqueue, created first in init and destroyed last in exit; the probe has no context to reach it otherwise
+asx_seq observer/kernel/anchorstamp_exec/anchorstamp_exec.c the per-load record sequence, written only by init, the ordered worker and exit, which never run concurrently
+asx_lost observer/kernel/anchorstamp_exec/anchorstamp_exec.c atomic count of execs not recorded, incremented by the probe on any CPU and exchanged to zero by the worker
+asx_load_id observer/kernel/anchorstamp_exec/anchorstamp_exec.c the random per-load identifier, written once in init before the probe is registered, read by every record
