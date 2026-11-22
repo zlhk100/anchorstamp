@@ -345,6 +345,24 @@ audit_marker() {
     return 1
 }
 
+# curl reads a config file from its user's home even with HOME unset; one
+# there could change what the netcheck curls do. Prints the first of
+# .curlrc and .config/curlrc (or a symbolic link of that name) in the
+# measured account's home and returns 0; returns 1 when there is none.
+curl_config_found() {
+    local h f
+    h=$(getent passwd "$AGENT" | cut -d: -f6)
+    if [ -n "$h" ] && [ -d "$h" ]; then
+        for f in "$h/.curlrc" "$h/.config/curlrc"; do
+            if [ -e "$f" ] || [ -L "$f" ]; then
+                printf '%s' "$f"
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
 # ---- arguments ---------------------------------------------------------
 LEAK=0
 if [ "${1:-}" = "--leak-test" ]; then
@@ -443,17 +461,8 @@ log "preflight account processes: ok none"
 # here, a failure inside the scope shows nothing about the scope.
 NETCHECK_CTRL=0
 if [ "$SCENARIO" = framework-netcheck ]; then
-    # curl reads a config file from its user's home even with HOME unset;
-    # one there could change what either curl does
-    AGENT_HOME=$(getent passwd "$AGENT" | cut -d: -f6)
-    if [ -n "$AGENT_HOME" ] && [ -d "$AGENT_HOME" ]; then
-        for f in "$AGENT_HOME/.curlrc" "$AGENT_HOME/.config/curlrc"; do
-            if [ -e "$f" ] || [ -L "$f" ]; then die "$f exists: a curl config of $AGENT could change the netcheck"; fi
-        done
-        log "preflight netcheck curl config: ok no .curlrc or .config/curlrc in $AGENT_HOME"
-    else
-        log "preflight netcheck curl config: ok home ${AGENT_HOME:-unset} of $AGENT is not a directory"
-    fi
+    if f=$(curl_config_found); then die "$f exists: a curl config of $AGENT could change the netcheck"; fi
+    log "preflight netcheck curl config: ok none in the home of $AGENT ($(getent passwd "$AGENT" | cut -d: -f6))"
     netcheck_control
     CTRL1="rc=$CTRL_RC http_code=${CTRL_CODE:-none} stderr_tail=\"$CTRL_ERR\""
     log "preflight netcheck control 1: curl http://1.1.1.1/ as $AGENT outside any scope: $CTRL1"
@@ -1164,8 +1173,14 @@ fi
 # now the run is over; the test passes only if both controls reached
 # 1.1.1.1 and the curl inside the scope failed to connect.
 if [ "$SCENARIO" = framework-netcheck ]; then
-    netcheck_control
-    CTRL2="rc=$CTRL_RC http_code=${CTRL_CODE:-none} stderr_tail=\"$CTRL_ERR\""
+    if f=$(curl_config_found); then
+        CTRL_RC=255
+        CTRL2="not run: $f exists"
+        stop "$f exists before the second netcheck control: a curl config of $AGENT could change it"
+    else
+        netcheck_control
+        CTRL2="rc=$CTRL_RC http_code=${CTRL_CODE:-none} stderr_tail=\"$CTRL_ERR\""
+    fi
     check "netcheck control 1 (step 1): $CTRL1"
     check "netcheck control 2 (after step 10): $CTRL2"
     LEFT=$( (pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") | sort -u | tr '\n' ' ') || true
