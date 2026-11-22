@@ -50,7 +50,6 @@
 #include <linux/tracepoint.h>
 #include <linux/uidgid.h>
 #include <linux/workqueue.h>
-#include <crypto/hash.h>
 #include <crypto/sha2.h>
 #include <asm/unaligned.h>
 
@@ -169,27 +168,21 @@ static int asx_emit_unload(void)
 	return asx_measure(buf, sizeof(buf));
 }
 
-/* First ASX_DIGEST_LEN bytes of SHA-256 over len bytes of path. */
-static int asx_path_digest(const char *path, size_t len, u8 *out)
+/*
+ * First ASX_DIGEST_LEN bytes of SHA-256 over len bytes of path, with the
+ * kernel library sha256(): no algorithm lookup, no allocation, no failure.
+ */
+static void asx_path_digest(const char *path, size_t len, u8 *out)
 {
-	struct crypto_shash *tfm;
 	u8 digest[SHA256_DIGEST_SIZE];
-	int ret;
 
-	tfm = crypto_alloc_shash("sha256", 0, 0);
-	if (IS_ERR(tfm))
-		return PTR_ERR(tfm);
-	ret = crypto_shash_tfm_digest(tfm, path, len, digest);
-	crypto_free_shash(tfm);
-	if (!ret)
-		memcpy(out, digest, ASX_DIGEST_LEN);
-	return ret;
+	sha256((const u8 *)path, len, digest);
+	memcpy(out, digest, ASX_DIGEST_LEN);
 }
 
 /*
  * Build the EXEC record into rec, resolving the path through pathbuf
- * (PATH_MAX bytes). Returns the record length, or a negative error when
- * the digest could not be computed.
+ * (PATH_MAX bytes). Returns the record length.
  */
 static int asx_build_exec(const struct asx_item *item, u8 *rec,
 			  char *pathbuf)
@@ -197,7 +190,6 @@ static int asx_build_exec(const struct asx_item *item, u8 *rec,
 	u8 kind = ASX_KIND_EXEC;
 	size_t len = 0;
 	char *path;
-	int ret;
 
 	memset(rec + ASX_OFF_PATH_DIGEST, 0, ASX_DIGEST_LEN);
 	path = d_path(&item->file->f_path, pathbuf, PATH_MAX);
@@ -205,9 +197,7 @@ static int asx_build_exec(const struct asx_item *item, u8 *rec,
 		kind |= ASX_PATH_UNRESOLVED;
 	} else {
 		len = strlen(path);
-		ret = asx_path_digest(path, len, rec + ASX_OFF_PATH_DIGEST);
-		if (ret)
-			return ret;
+		asx_path_digest(path, len, rec + ASX_OFF_PATH_DIGEST);
 		if (len > ASX_PATH_CAP) {
 			kind |= ASX_PATH_TRUNCATED;
 			len = ASX_PATH_CAP;
@@ -252,7 +242,7 @@ static void asx_work(struct work_struct *work)
 	len = asx_build_exec(item, rec, pathbuf);
 	fput(item->file);
 	item->file = NULL;
-	if (len < 0 || asx_measure(rec, len))
+	if (asx_measure(rec, len))
 		atomic64_inc(&asx_lost);
 
 out:
