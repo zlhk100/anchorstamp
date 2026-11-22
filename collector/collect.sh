@@ -15,8 +15,11 @@
 # mode 0700, while the run lasts; it is handed to the invoking user only
 # when the run ends.
 #
-# The collector is transport, not a trusted party: verify/verify-anchor.py
-# believes nothing here that a quote does not cover.
+# The collector is transport, not a trusted party: the reader believes
+# nothing here that a quote does not cover. The list carries the shim's
+# exec records, record v2 ("ASX2"); the reader (demo-report --bundle)
+# decodes v2, and v1 for older bundles; verify/verify-anchor.py reads v1
+# only.
 #
 # Attestation key: created once, an ECC P-256 ECDSA SHA-256 key under the
 # endorsement key (RSA 2048, default template, transient), kept as files in
@@ -26,7 +29,8 @@
 # under it. Never: persistent handles, NV indices, hierarchy auth, clear,
 # PCR extend.
 #
-# Bundle: ima.bin, boot_id (information), kernel, ak.pem, ak.name,
+# Bundle: ima.bin, boot_id (information), kernel, interval (the --every
+# value in seconds, 0 for a single round), ak.pem, ak.name,
 # quote-<n>.{msg,sig,pcrs,src}, pcr7-<n>.bin, collect.txt (this output).
 set -euo pipefail
 
@@ -103,6 +107,7 @@ must() { "$@" || { echo "STOP: step failed: $*"; exit 2; }; }
 echo "collect.sh $(date -Is) kernel $(uname -r)"
 cp /proc/sys/kernel/random/boot_id "$out/boot_id"
 uname -r >"$out/kernel"
+printf '%s\n' "${every:-0}" >"$out/interval"
 echo "boot_id $(cat "$out/boot_id") (information, not evidence)"
 
 tpm2_getcap handles-persistent >"$out/.round.handles-before"
