@@ -20,6 +20,10 @@ if [ ! -e "$POLICY" ]; then
     exit 1
 fi
 ls -l "$POLICY"
+# Record any built-in policy chosen on the kernel command line, so the log
+# shows what was in force when the rule was written.
+builtin=$(tr ' ' '\n' </proc/cmdline | grep '^ima_policy=' || true)
+echo "kernel command line ima_policy: ${builtin:-none}"
 echo "writing: $RULE"
 if ! printf '%s\n' "$RULE" >"$POLICY"; then
     echo "FAILED: the kernel rejected the rule"
