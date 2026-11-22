@@ -513,6 +513,7 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     for a in space_left_action admin_space_left_action disk_full_action disk_error_action; do
         v=$(auditd_value "$a" | LC_ALL=C tr -cd '\40-\176')
         log "preflight auditd $a=${v:-unset}"
+        if [ "$a" = admin_space_left_action ]; then ASL_ACTION=${v:-unset}; fi
     done
     STOP_FREE=$(((SL > ASL ? SL : ASL) + 4 * 1024 * 1024 * 1024))
     log "preflight auditd space_left=$SL_RAW ($SL bytes) admin_space_left=$ASL_RAW ($ASL bytes) on a filesystem of $FS_SIZE bytes; STOP_FREE=$STOP_FREE bytes (the larger plus 4 GiB)"
@@ -594,7 +595,7 @@ log "step 3 run directory $RUN"
 check "scheduled jobs before the run: $SCHED_BEFORE"
 check "scheduling barred for the measured account: $BARRED"
 if [ "$FRAMEWORK" -eq 1 ]; then
-    check "auditd suspends at admin_space_left=$ASL_RAW ($ASL bytes available); the harness kills the measured account at $STOP_FREE bytes available"
+    check "auditd takes admin_space_left_action=$ASL_ACTION at admin_space_left=$ASL_RAW ($ASL bytes available); the harness kills the measured account at $STOP_FREE bytes available"
 fi
 log "  core_pattern=$(cat /proc/sys/kernel/core_pattern) suid_dumpable=$(cat /proc/sys/fs/suid_dumpable) ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
 
