@@ -28,7 +28,9 @@
 #
 # What it does, in order:
 #    1  preflight checks; record `auditctl -s` and `auditctl -l`; the
-#       measured account has no crontab and no at job
+#       measured account has no crontab and no at job; framework-netcheck:
+#       the plan's curl run as the measured account outside any scope, the
+#       control the block inside the scope is shown against
 #    2  install the binaries and scenarios into a new root-owned directory,
 #       each copied from a regular file through a descriptor; record SHA-256
 #    3  create the run directory (never reused) with sink/ and claims/
@@ -286,6 +288,22 @@ log "preflight account: ok $AGENT uid=$AGENT_UID groups=$(id -nG "$AGENT") shell
 LEFT=$(pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") || true
 [ -z "$LEFT" ] || die "processes of $AGENT exist before the run: $(printf '%s' "$LEFT" | tr '\n' ' ')"
 log "preflight account processes: ok none"
+
+# framework-netcheck: the control. The same curl as the measured account,
+# outside any scope, before the rules exist. If it cannot reach 1.1.1.1
+# here, a failure inside the scope shows nothing about the scope.
+NETCHECK_CTRL=0
+if [ "$SCENARIO" = framework-netcheck ]; then
+    CTRL_CODE=$(sudo -n -u "$AGENT" -- env -i PATH=/usr/bin:/bin /usr/bin/curl -sS \
+        -o /dev/null -w '%{http_code}' --max-time 3 http://1.1.1.1/) && CTRL_RC=0 || CTRL_RC=$?
+    CTRL_CODE=$(printf '%s' "$CTRL_CODE" | LC_ALL=C tr -cd '0-9' | head -c 3)
+    log "preflight netcheck control: curl http://1.1.1.1/ as $AGENT outside any scope: rc=$CTRL_RC http_code=${CTRL_CODE:-none}"
+    if [ "$CTRL_RC" -eq 0 ]; then
+        NETCHECK_CTRL=1
+    else
+        stop "netcheck control failed outside the scope: no block can be shown (inconclusive)"
+    fi
+fi
 
 # no crontab and no at job of the measured account
 SCHED_BEFORE=$(sched_check) && r=0 || r=$?
@@ -853,26 +871,39 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     else
         check "claims/claims.bin: absent"
     fi
-    # framework-netcheck passes only if the agent's own log shows curl,
-    # through run_command, blocked by the scope: exit 7 (could not
-    # connect), a claim from the bridge, and the kernel's refusal in the
-    # tail of its stderr. Anything else is a stop, with the entry shown.
+    # framework-netcheck passes only if the control in step 1 succeeded and
+    # the agent's own log shows the same curl, through run_command and
+    # claimed by the bridge, failing to connect: exit 7 (could not connect)
+    # or 28 (timed out). On this kernel the scope's block is a silent drop,
+    # so no error text proves a denial; the control is what shows the
+    # failure is the scope's. Anything else is a stop, with the entry shown.
     if [ "$SCENARIO" = framework-netcheck ]; then
         NC=""
         if open_single "$RUN/claims/agent-log.jsonl"; then
             NC=$(head -c 1048576 <&"$AFD" |
-                grep -a -m1 -E '^\{"tool": "run_command", "argv": \["/usr/bin/curl"[],]' |
+                grep -a -m1 '^{"tool": "run_command", "argv": \["/usr/bin/curl", "-sS", "--max-time", "3", "http://1\.1\.1\.1/"\], ' |
                 LC_ALL=C tr -cd '\11\40-\176') || true
             exec {AFD}<&-
         fi
+        # The fields after argv, in the order agent.py writes them (argv
+        # holds no ']').
+        NC_EXIT=$(printf '%s' "$NC" | sed -n 's/^[^]]*\], "exit": \([0-9][0-9]*\), .*/\1/p')
+        NC_CLAIMED=0
+        if printf '%s' "$NC" | grep -q '^[^]]*\], "exit": [0-9][0-9]*, "bridge": "anchorstamp-exec: claim pid=[0-9][0-9]*", '; then
+            NC_CLAIMED=1
+        fi
         NC_TAIL=${NC#*\"stderr_tail\": \"}
-        if [ -n "$NC" ] && [ "$NC_TAIL" != "$NC" ] &&
-            printf '%s' "$NC" | grep -qE '"exit": 7, "bridge": "anchorstamp-exec: claim pid=[0-9]+"' &&
-            case "$NC_TAIL" in *"Operation not permitted"*) true ;; *) false ;; esac; then
-            check "netcheck: curl through run_command blocked by the scope: exit 7, claimed by the bridge, stderr \"Operation not permitted\""
+        if [ "$NC_TAIL" = "$NC" ]; then NC_TAIL=""; fi
+        NC_TAIL=${NC_TAIL%\", \"t_ms\"*}
+        if [ -n "$NC" ]; then
+            check "netcheck: curl through run_command exit=${NC_EXIT:-none} claimed_by_bridge=$NC_CLAIMED stderr_tail=\"$NC_TAIL\""
+        fi
+        if [ "$NETCHECK_CTRL" -eq 1 ] && [ "$NC_CLAIMED" -eq 1 ] &&
+            { [ "$NC_EXIT" = 7 ] || [ "$NC_EXIT" = 28 ]; }; then
+            check "netcheck: PASS control reached 1.1.1.1 outside the scope; inside it curl through run_command, claimed by the bridge, failed to connect (exit $NC_EXIT)"
         else
-            check "netcheck: curl not shown blocked; entry: ${NC:-none}"
-            stop "framework-netcheck: curl was not shown blocked by the scope"
+            check "netcheck: curl not shown blocked against the control (control ok=$NETCHECK_CTRL); entry: ${NC:-none}"
+            stop "framework-netcheck: curl was not shown blocked by the scope against a successful control"
         fi
     fi
 fi
