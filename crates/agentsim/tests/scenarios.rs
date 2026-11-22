@@ -116,6 +116,21 @@ fn forger_appends_its_forgeries() {
         |b: &[u8]| u32::from_be_bytes(decode_joinref(b).unwrap().bytes()[0..4].try_into().unwrap());
     assert_eq!(pid(&c[2]), u32::MAX - 1);
     assert!(out.contains("FORGED agent=main kind=mismatch"));
+    let subject = |b: &[u8]| decode_joinref(b).unwrap().bytes().to_vec();
+    let u64_at = |s: &[u8], at: usize| u64::from_be_bytes(s[at..at + 8].try_into().unwrap());
+    for forged in [2, 4] {
+        let s = subject(&c[forged]);
+        assert_eq!(s.len(), 60, "LINUX_EXEC subject");
+        // digest and boot come from the real claim before it
+        assert_eq!(s[20..60], subject(&c[forged - 1])[20..60]);
+        assert!(u64_at(&s, 4) <= u64_at(&s, 12), "t0 <= t_reap");
+    }
+    // the unobserved forgery is one instant; the mismatch window spans a run
+    let s = subject(&c[2]);
+    assert_eq!(u64_at(&s, 4), u64_at(&s, 12));
+    let ran: u32 =
+        out.split("kind=mismatch pid=").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+    assert_eq!(pid(&c[4]), ran);
 }
 
 #[test]

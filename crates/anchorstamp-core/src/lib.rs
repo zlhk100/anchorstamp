@@ -1,4 +1,4 @@
-//! anchorstamp-core — record types and the layout-0 wire encoding.
+//! anchorstamp-core — record types and the layout-1 wire encoding.
 //!
 //! No dependencies, no hashing, no signatures. A subject is a scheme tag
 //! and opaque bytes; this crate names no platform concept.
@@ -15,7 +15,7 @@ pub use wire::{
 };
 
 /// Layout number this crate encodes and decodes.
-pub const LAYOUT: u8 = 0;
+pub const LAYOUT: u8 = 1;
 
 /// Prefix of every sighting record.
 pub const SIGHTING_PREFIX: &[u8; 20] = b"anchorstamp/sighting";
@@ -23,12 +23,9 @@ pub const SIGHTING_PREFIX: &[u8; 20] = b"anchorstamp/sighting";
 pub const JOINREF_PREFIX: &[u8; 19] = b"anchorstamp/joinref";
 
 /// Bounds on variable-length fields.
-pub const SUBJECT_MAX: usize = 32;
+pub const SUBJECT_MAX: usize = 64;
 pub const OBSERVED_MAX: usize = 1024;
 pub const SELF_PROV_MAX: usize = 256;
-
-/// Length of the signature that ends every sighting.
-pub const SIGNATURE_LEN: usize = 64;
 
 /// Longest possible sighting encoding.
 pub const SIGHTING_MAX_LEN: usize = 20 + 1 // prefix, layout
@@ -37,9 +34,7 @@ pub const SIGHTING_MAX_LEN: usize = 20 + 1 // prefix, layout
     + 11                                   // coverage
     + 1 + 4 + SELF_PROV_MAX                // self-provenance
     + 16 + 8 + 32                          // seq
-    + 3                                    // source
-    + 32                                   // key id
-    + SIGNATURE_LEN;
+    + 3; // source
 
 /// Longest possible join reference encoding.
 pub const JOINREF_MAX_LEN: usize = 19 + 1 + 3 + SUBJECT_MAX;
@@ -47,11 +42,16 @@ pub const JOINREF_MAX_LEN: usize = 19 + 1 + 3 + SUBJECT_MAX;
 /// Observed-data class shared with `coverage.over`.
 pub const CLASS_COMMAND_EXECUTION: u16 = 1;
 
-/// Proof-of-concept observer control records, under `SchemeTag::OBSERVER`.
-/// Never executions. Index 0 of every instance; data = coverage start in
-/// milliseconds, u64.
+/// Source control records, under `SchemeTag::OBSERVER`; the subject bytes
+/// are the instance id. Never executions.
+///
+/// A source's clock moved by more than its tolerance between two samples;
+/// data = the size of the move, u64. A hole, like a parse reject.
+pub const CLASS_CLOCK_STEP: u16 = 0xFFFC;
+/// First record of every instance; its data is defined by the source
+/// profile.
 pub const CLASS_INSTANCE_START: u16 = 0xFFFD;
-/// Emitted after each rejected input line; data = cumulative count, u64.
+/// Emitted after each rejected input; data = cumulative count, u64.
 pub const CLASS_PARSE_REJECT: u16 = 0xFFFE;
 /// Last record when the input ends abnormally; data = reason, u8.
 pub const CLASS_STREAM_ENDED: u16 = 0xFFFF;
@@ -66,15 +66,16 @@ pub const ENDED_READ_ERROR: u8 = 3;
 pub struct SchemeTag(pub u16);
 
 impl SchemeTag {
-    /// Proof-of-concept observer control records; subject = instance id.
+    /// The registry's first production scheme. This crate attaches no
+    /// meaning to it; the scheme's functions live with the reader.
+    pub const LINUX_EXEC: SchemeTag = SchemeTag(0x0001);
+    /// Source control records; subject = instance id.
     pub const OBSERVER: SchemeTag = SchemeTag(0xFFFD);
-    /// Proof-of-concept scheme. Never accepted by a conforming reader.
-    pub const DEMO: SchemeTag = SchemeTag(0xFFFE);
     /// Conformance-test scheme.
     pub const TEST: SchemeTag = SchemeTag(0xFFFF);
 }
 
-/// A subject: a scheme tag and 1..=32 opaque bytes.
+/// A subject: a scheme tag and 1..=64 opaque bytes.
 ///
 /// Deliberately not `PartialEq`: subjects are compared only through a
 /// scheme's own functions, never by whole-byte equality.
@@ -86,14 +87,15 @@ pub struct SubjectRef {
 }
 
 impl SubjectRef {
-    /// `None` when `bytes` is empty or longer than 32.
+    /// `None` when `bytes` is empty or longer than 64.
     pub fn new(scheme: SchemeTag, bytes: &[u8]) -> Option<SubjectRef> {
+        let len = u8::try_from(bytes.len()).ok()?;
         if bytes.is_empty() || bytes.len() > SUBJECT_MAX {
             return None;
         }
         let mut buf = [0u8; SUBJECT_MAX];
         buf[..bytes.len()].copy_from_slice(bytes);
-        Some(SubjectRef { scheme, len: bytes.len() as u8, bytes: buf })
+        Some(SubjectRef { scheme, len, bytes: buf })
     }
 
     pub fn scheme(&self) -> SchemeTag {
@@ -190,7 +192,7 @@ pub struct SelfProv<'a> {
     pub reference: &'a [u8],
 }
 
-/// Sequence position of a sighting within its observer instance.
+/// Sequence position of a sighting within its source instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Seq {
     pub instance: [u8; 16],
@@ -198,14 +200,15 @@ pub struct Seq {
     pub prev: [u8; 32],
 }
 
-/// The sequence source the observer declares.
+/// The sequence source the source declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SequenceSource {
     None,
     Declared(u16),
 }
 
-/// Every field of a sighting, borrowed.
+/// Every field of a sighting, borrowed. Layout 1 carries no key id and
+/// no signature.
 #[derive(Clone, Copy, Debug)]
 pub struct SightingParts<'a> {
     pub subject: SubjectRef,
@@ -214,8 +217,6 @@ pub struct SightingParts<'a> {
     pub self_prov: Option<SelfProv<'a>>,
     pub seq: Seq,
     pub source: SequenceSource,
-    pub key_id: [u8; 32],
-    pub signature: [u8; SIGNATURE_LEN],
 }
 
 /// A decoded sighting and the bytes it was decoded from.
@@ -226,13 +227,8 @@ pub struct SightingView<'a> {
 }
 
 impl<'a> SightingView<'a> {
-    /// The complete encoding, signature included.
+    /// The complete encoding: what the chain digest covers.
     pub fn raw(&self) -> &'a [u8] {
         self.raw
-    }
-
-    /// The bytes the signature covers: prefix through key id.
-    pub fn signed(&self) -> &'a [u8] {
-        &self.raw[..self.raw.len() - SIGNATURE_LEN]
     }
 }

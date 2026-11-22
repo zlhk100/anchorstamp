@@ -1,11 +1,11 @@
-//! Layout-0 encode and decode. A record that does not parse exactly is
+//! Layout-1 encode and decode. A record that does not parse exactly is
 //! malformed: wrong prefix or layout, a length out of range, an unknown
 //! flag value, or trailing bytes.
 
 use crate::{
     Coverage, CoverageMode, JOINREF_PREFIX, LAYOUT, OBSERVED_MAX, Observed, SELF_PROV_MAX,
-    SIGHTING_PREFIX, SIGNATURE_LEN, SchemeTag, SelfProv, Seq, SequenceSource, SightingParts,
-    SightingView, SubjectRef,
+    SIGHTING_PREFIX, SchemeTag, SelfProv, Seq, SequenceSource, SightingParts, SightingView,
+    SubjectRef,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,8 +62,9 @@ impl Writer<'_> {
 
     fn subject(&mut self, s: &SubjectRef) -> Result<(), EncodeError> {
         self.u16(s.scheme().0)?;
-        // SubjectRef guarantees 1..=32.
-        self.u8(s.bytes().len() as u8)?;
+        // SubjectRef guarantees 1..=64.
+        let len = u8::try_from(s.bytes().len()).map_err(|_| EncodeError::BufferTooSmall)?;
+        self.u8(len)?;
         self.put(s.bytes())
     }
 }
@@ -163,8 +164,6 @@ pub fn encode_sighting(p: &SightingParts, out: &mut [u8]) -> Result<usize, Encod
             w.u16(tag)?;
         }
     }
-    w.put(&p.key_id)?;
-    w.put(&p.signature)?;
     Ok(w.at)
 }
 
@@ -202,8 +201,6 @@ pub fn decode_sighting(buf: &[u8]) -> Result<SightingView<'_>, DecodeError> {
         1 => SequenceSource::Declared(r.u16()?),
         _ => return Err(DecodeError::SourceFlag),
     };
-    let key_id = r.array()?;
-    let signature: [u8; SIGNATURE_LEN] = r.array()?;
     r.finish()?;
     Ok(SightingView {
         parts: SightingParts {
@@ -213,8 +210,6 @@ pub fn decode_sighting(buf: &[u8]) -> Result<SightingView<'_>, DecodeError> {
             self_prov,
             seq: Seq { instance, index, prev },
             source,
-            key_id,
-            signature,
         },
         raw: buf,
     })

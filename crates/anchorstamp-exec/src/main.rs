@@ -61,8 +61,10 @@ fn main() {
                 eprintln!("anchorstamp-exec: claims write failed (the command already ran)");
                 exit(EXIT_BRIDGE);
             }
-            let pid =
-                u32::from_be_bytes(j.subject().bytes()[0..4].try_into().expect("DEMO subject"));
+            // the LINUX_EXEC subject starts with the child's pid, u32 big-endian
+            let pid = u32::from_be_bytes(
+                j.subject().bytes()[0..4].try_into().expect("LINUX_EXEC subject"),
+            );
             eprintln!("anchorstamp-exec: claim pid={pid}");
         }
         Vantage::Local => {

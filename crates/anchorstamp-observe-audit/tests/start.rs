@@ -1,5 +1,6 @@
-//! The binary's start sequence, unprivileged: it must stop at the drop
-//! and never publish an anchor. The full sequence runs only as root.
+//! The binary's start sequence, unprivileged: it must stop at the drop,
+//! before its instance-start record and its ready line. The full sequence
+//! runs only as root.
 
 use std::process::Command;
 
@@ -12,7 +13,7 @@ fn fresh_dir(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn unprivileged_start_stops_before_the_anchor() {
+fn unprivileged_start_stops_before_the_first_record() {
     if euid() == 0 {
         return; // the privileged path is exercised by the live run
     }
@@ -33,10 +34,11 @@ fn unprivileged_start_stops_before_the_anchor() {
     assert_eq!(out.status.code(), Some(2));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("setgroups failed"), "{err}");
-    assert!(!err.contains("anchor written"));
-    // the anchor file exists (created before the drop) but holds nothing
-    assert_eq!(std::fs::metadata(d.join("anchor.pub")).unwrap().len(), 0);
+    assert!(err.contains("start anchorstamp specification 0.4, layout 1, source profile S"), "{err}");
+    assert!(!err.contains("ready "), "{err}");
+    // the sink exists (created before the drop) but holds nothing
     assert_eq!(std::fs::metadata(d.join("sightings.bin")).unwrap().len(), 0);
+    assert!(!d.join("anchor.pub").exists(), "no anchor: the source holds no key");
 }
 
 #[test]
@@ -50,7 +52,8 @@ fn refuses_an_existing_sink() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
-    assert!(!d.join("anchor.pub").exists(), "stopped before creating the anchor");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("start "), "stopped before the start line: {err}");
 }
 
 #[test]

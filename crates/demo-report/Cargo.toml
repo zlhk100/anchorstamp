@@ -14,4 +14,3 @@ anchorstamp-verify = { path = "../anchorstamp-verify" }
 [dev-dependencies]
 # Fixtures are built with the observer's own record builder and a test key.
 anchorstamp-observe-audit = { path = "../anchorstamp-observe-audit" }
-ed25519-dalek = "=3.0.0"

@@ -1,9 +1,12 @@
 //! demo-report — what one demo run's evidence supports, in words.
 //!
 //! Runs outside the measured account, from the root-owned install. Reads
-//! the run directory only. Every verdict sentence says what the reader's
-//! outcome carries and nothing more; the limits and the standing
-//! statements are printed on every report.
+//! the run directory (the software source and the claims) and, when one
+//! is given, a kernel-source bundle with the attestation key the operator
+//! pinned. One outcome per claim per source; sources are never combined.
+//! Every verdict sentence says what the reader's outcome carries and
+//! nothing more; the limits and the standing statements are printed on
+//! every report.
 
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
@@ -11,15 +14,16 @@ use std::io::Read as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use anchorstamp_core::{
-    CLASS_STREAM_ENDED, ENDED_READ_ERROR, ENDED_ROTATED, ENDED_SHRUNK, SchemeTag, SightingView,
-    decode_joinref,
-};
-use anchorstamp_verify::schemes::{Demo, DemoSubject};
+use anchorstamp_core::{ENDED_READ_ERROR, ENDED_ROTATED, ENDED_SHRUNK};
+use anchorstamp_verify::exec::{Claim, account, candidate, join, matches, same_boot};
+use anchorstamp_verify::k::{Bundle, Quote};
 use anchorstamp_verify::{
-    Cap, DeclaredPath, Detail, Kind, Outcome, Path as Delivery, Scheme as _, Stream,
-    account_stream, join_stream,
+    Anchor, Cap, DeclaredPath, Detail, Evidence, ExecRecord, Kind, Outcome, Path as Delivery,
+    Profile, k, s,
 };
+
+/// What this report declares itself to be: its first line.
+pub const DECLARATION: &str = "anchorstamp specification 0.4, layout 1, reader";
 
 /// Largest record length a frame may declare.
 pub const FRAME_MAX: usize = 65_536;
@@ -59,12 +63,35 @@ pub struct Harness {
     pub checks: Option<String>,
 }
 
+/// One quote of a bundle, as files.
+pub struct QuoteFiles {
+    pub attest: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub pcr7: Vec<u8>,
+}
+
+/// The kernel source: a collector bundle and the operator's choices.
+pub struct KInputs {
+    pub label: String,
+    pub list: Vec<u8>,
+    pub quotes: Vec<QuoteFiles>,
+    pub boot_id: Option<[u8; 16]>,
+    pub interval_s: Option<u32>,
+    /// The pinned attestation key, DER, from the operator — never from the
+    /// bundle.
+    pub ak: Vec<u8>,
+    pub ak_label: String,
+    /// The uids whose execs the unclaimed list covers.
+    pub scope: Vec<u32>,
+    pub nonce: Option<Vec<u8>>,
+}
+
 /// Everything the report reads.
 pub struct Inputs {
     pub sightings: Vec<u8>,
-    pub anchor: Option<[u8; 32]>,
     pub claims: Vec<u8>,
     pub harness: Harness,
+    pub kernel: Option<KInputs>,
     /// Input files that were not read whole, and why.
     pub notes: Vec<String>,
 }
@@ -77,9 +104,9 @@ pub const READ_MAX: u64 = 64 * 1024 * 1024;
 #[cfg(not(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "x86"))))]
 compile_error!("open flag values are given for x86 Linux only");
 const O_NONBLOCK: i32 = 0o4000;
-const O_NOFOLLOW: i32 = 0o400000;
+const O_NOFOLLOW: i32 = 0o400_000;
 
-/// Read one file of the run directory. Part of it is writable by the
+/// Read one input file. Part of the run directory is writable by the
 /// measured account, so: never through a symlink, never waiting on a FIFO,
 /// regular files only, at most `READ_MAX` bytes. `None` when absent or
 /// refused; a refusal or a cut is noted.
@@ -103,10 +130,24 @@ pub fn read_input(path: &Path, notes: &mut Vec<String>) -> Option<Vec<u8>> {
         return None;
     }
     if b.len() as u64 > READ_MAX {
-        b.truncate(READ_MAX as usize);
+        b.truncate(usize::try_from(READ_MAX).expect("fits"));
         notes.push(format!("{name}: larger than {READ_MAX} bytes, only the first {READ_MAX} read"));
     }
     Some(b)
+}
+
+/// A boot id as /proc prints it: 32 hex digits and hyphens.
+pub fn parse_boot_id(text: &[u8]) -> Option<[u8; 16]> {
+    let t = std::str::from_utf8(text).ok()?.trim_end_matches('\n');
+    let digits: Vec<u8> = t.bytes().filter(|&b| b != b'-').collect();
+    if digits.len() != 32 || !digits.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(std::str::from_utf8(&digits[2 * i..2 * i + 2]).ok()?, 16).ok()?;
+    }
+    Some(out)
 }
 
 impl Inputs {
@@ -114,7 +155,6 @@ impl Inputs {
         let mut notes = Vec::new();
         let mut rd = |p: &str| read_input(&run.join(p), &mut notes);
         let sightings = rd("sink/sightings.bin").unwrap_or_default();
-        let anchor = rd("sink/anchor.pub").and_then(|b| b.try_into().ok());
         let claims = rd("claims/claims.bin").unwrap_or_default();
         let mut txt = |p: &str| rd(p).map(|b| String::from_utf8_lossy(&b).into_owned());
         let harness = Harness {
@@ -123,31 +163,94 @@ impl Inputs {
             agent_log: txt("agent.log"),
             checks: txt("harness-checks.txt"),
         };
-        Inputs { sightings, anchor, claims, harness, notes }
+        Inputs { sightings, claims, harness, kernel: None, notes }
     }
 }
 
-pub const TRUNCATION_WINDOW: &str = "Records after the last one shown cannot be distinguished from none: the stream may have been cut short.";
+impl KInputs {
+    /// Read a collector bundle: ima.bin, quote-<n>.msg, quote-<n>.sig and
+    /// pcr7-<n>.bin for n = 1, 2, ... while all three exist, boot_id, and
+    /// interval. The bundle's own copy of the key is not read.
+    pub fn read(
+        bundle: &Path,
+        ak_path: &Path,
+        scope: Vec<u32>,
+        nonce: Option<Vec<u8>>,
+        notes: &mut Vec<String>,
+    ) -> KInputs {
+        let list = read_input(&bundle.join("ima.bin"), notes).unwrap_or_default();
+        let mut quotes = Vec::new();
+        for n in 1.. {
+            let mut f = |name: String| read_input(&bundle.join(name), notes);
+            let (Some(attest), Some(signature), Some(pcr7)) =
+                (f(format!("quote-{n}.msg")), f(format!("quote-{n}.sig")), f(format!("pcr7-{n}.bin")))
+            else {
+                break;
+            };
+            quotes.push(QuoteFiles { attest, signature, pcr7 });
+        }
+        let boot_id = read_input(&bundle.join("boot_id"), notes).and_then(|b| parse_boot_id(&b));
+        let interval_s = read_input(&bundle.join("interval"), notes)
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.trim().parse().ok());
+        let ak = read_input(ak_path, notes).unwrap_or_default();
+        KInputs {
+            label: bundle.display().to_string(),
+            list,
+            quotes,
+            boot_id,
+            interval_s,
+            ak,
+            ak_label: ak_path.display().to_string(),
+            scope,
+            nonce,
+        }
+    }
+
+    pub fn evidence(&self) -> Evidence {
+        let quotes: Vec<Quote> = self
+            .quotes
+            .iter()
+            .map(|q| Quote { attest: &q.attest, signature: &q.signature, pcr7: &q.pcr7 })
+            .collect();
+        k::build(&Bundle {
+            list: &self.list,
+            quotes: &quotes,
+            ak_spki: &self.ak,
+            boot_id: self.boot_id,
+            nonce: self.nonce.as_deref(),
+            interval_s: self.interval_s,
+        })
+    }
+}
+
+pub const TRUNCATION_WINDOW: &str = "Records after the last one shown cannot be distinguished from none: a stream may have been cut short.";
 pub const OUTSIDE_READER: &str = "This reader runs outside the measured account.";
-pub const LIMIT_PID_REUSE: &str =
-    "Limit: two execs reusing one pid with one binary are indistinguishable.";
+pub const SELF_DECLARED: &str =
+    "The software observer's position and coverage mode are self-declared and corroborated by nothing.";
+pub const LIBRARY: &str =
+    "The library and the command-line bridge run inside the measured account and are not trusted components.";
+pub const LIMIT_PID_REUSE: &str = "Limit: the software source carries no fork time; a pid reused inside a claim's window \
+by a process running the same file is indistinguishable from the claimed one.";
 pub const LIMIT_CAUSATION: &str = "Limit: a claim proves an exec matching the descriptor was observed - not that the claimant caused it. \
 The measured party can read the stream and claim a real exec afterwards; it cannot claim one that did not happen, \
-nor change the binary.";
-pub const LIMIT_SCRIPTS: &str = "Limit: scripts are out of scope: audit records the interpreter.";
-pub const SELF_DECLARED: &str =
-    "The observer's position and coverage mode are self-declared and corroborated by nothing.";
-pub const LIBRARY: &str =
-    "The library runs inside the measured account and is not a trusted component.";
-pub const ANCHORING: &str = "Anchoring: none. The anchor is the public key the observer wrote at its start, \
-taken on the operator's word; no time or third-party anchor exists.";
+nor change the file.";
+pub const LIMIT_SCRIPTS: &str = "Limit: for a #! script the kernel source agrees with the cap Interpreted and names the interpreter; \
+the software source records the interpreter and does not agree.";
+pub const LIMIT_ROOT: &str = "Limit: root on this host can add entries to PCR 13 from user space, so a kernel-source agreement \
+carries the cap RootCanInsert; root cannot remove the kernel's own records, so a contradiction does not rest on that.";
+pub const BOOT_ASSERTED: &str =
+    "The boot each source observed is asserted by its collector or observer; nothing in the evidence binds it.";
+pub const ANCHORING: &str = "Anchoring: the software source has none - its records are unsigned and its transport is the operator's word. \
+The kernel source is anchored only by TPM quotes valid under the attestation key the operator pinned locally; \
+records after the last quote are unanchored.";
 
 /// Printable form of untrusted bytes: printable ASCII kept, all else \xNN.
 pub fn escape(b: &[u8]) -> String {
     let mut s = String::with_capacity(b.len());
     for &c in b {
         if (0x21..=0x7e).contains(&c) && c != b'\\' {
-            s.push(c as char);
+            s.push(char::from(c));
         } else {
             let _ = write!(s, "\\x{c:02x}");
         }
@@ -155,282 +258,398 @@ pub fn escape(b: &[u8]) -> String {
     s
 }
 
-/// One execution sighting, decoded for display.
-struct Seen {
-    index: u64,
-    subject: DemoSubject,
-    ppid: u32,
-    exe: Vec<u8>,
-    truncated: bool,
-    line_cut: bool,
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn seen(index: u64, v: &SightingView) -> Option<Seen> {
-    let subject = DemoSubject::parse(&v.parts.subject)?;
-    let d = v.parts.observed.data;
-    if d.len() < 5 {
-        return None;
-    }
-    Some(Seen {
-        index,
-        subject,
-        ppid: u32::from_be_bytes(d[1..5].try_into().ok()?),
-        exe: d[5..].to_vec(),
-        truncated: d[0] & 1 == 1,
-        line_cut: d[0] & 2 == 2,
-    })
-}
-
-fn exe_text(s: &Seen) -> String {
-    let t = if s.truncated { " [path truncated in the record]" } else { "" };
-    let l = if s.line_cut { " [audit line cut at the length limit]" } else { "" };
-    format!("{}{t}{l}", escape(&s.exe))
-}
-
-fn cap_words(c: &Cap) -> &'static str {
+fn cap_words(c: Cap) -> &'static str {
     match c {
-        Cap::SelfProvAbsent => "the matching sighting carries no self-provenance",
+        Cap::SelfProvAbsent => "no measurement of the observer's own launch is in the evidence",
         Cap::SelfProvUnappraised => "self-provenance present but not appraised",
         Cap::SequenceUnappraised => "the observer's sequence source is not appraised",
         Cap::AnchorOperatorAsserted => "the anchor is asserted by the operator",
+        Cap::TransportOperatorAsserted => "the records are unsigned: their transport is the operator's word",
+        Cap::BootConfigUnappraised => "the boot configuration (PCR 7) is not appraised",
+        Cap::EkChainUnvalidated => "no endorsement key certificate chain was checked",
+        Cap::AkPinnedLocally => "the attestation key is pinned locally by the operator",
+        Cap::BootAsserted => "the boot id is asserted by the source",
+        Cap::PathUnverified => "the path is resolved in the task's own namespace and root, unchecked",
+        Cap::RootCanInsert => "root can add entries to PCR 13 from user space",
+        Cap::Interpreted => "the match is on an interpreted (#!) record",
+        Cap::Unanchored => "the record comes after the last valid quote",
     }
 }
 
-/// `unparsed`: audit lines the observer could not parse, stream-wide.
-fn verdict_words(o: &Outcome, unparsed: u64) -> String {
+fn caps_line(strength: u16, caps: &[Cap]) -> String {
+    let words: Vec<&str> = caps.iter().map(|c| cap_words(*c)).collect();
+    let name = match strength {
+        400 => "ATTESTED",
+        100 => "SOFTWARE",
+        _ => "?",
+    };
+    format!("strength {name} ({strength}); held there because: {}", words.join("; "))
+}
+
+fn anchor_words(a: &Anchor, interval: Option<u32>) -> String {
+    let every = interval.map_or("not recorded".to_string(), |s| {
+        if s == 0 { "a single round".to_string() } else { format!("every {s} s") }
+    });
+    match a {
+        Anchor::None => "anchor: none".into(),
+        Anchor::Within(w) => format!(
+            "anchor: between TPM clock {} and {} ms, resetCount {}, restartCount {} -> {}, safe {}; quotes {every}",
+            w.from.map_or("(no earlier quote)".to_string(), |f| f.to_string()),
+            w.to,
+            w.reset_count,
+            w.restart_from.map_or("-".to_string(), |r| r.to_string()),
+            w.restart_to,
+            if w.safe { "yes" } else { "no" }
+        ),
+    }
+}
+
+/// Why a claim compares nothing, from what the outcome and the evidence
+/// carry.
+fn nothing_why(o: &Outcome, ev: &Evidence, claim: Option<&Claim>) -> String {
+    if o.path == Delivery::NothingArrived {
+        return "no valid record arrived".into();
+    }
+    let Some(c) = claim else { return "the claim is not a LINUX_EXEC reference".into() };
+    if !ev.instances.iter().any(|i| same_boot(c, i)) {
+        return "the source holds no instance of the claim's boot".into();
+    }
+    if o.health.evidence_broken {
+        return "the evidence is broken".into();
+    }
+    if ev.instances.iter().any(|i| i.v1 && same_boot(c, i)) {
+        return "the source holds a load of record v1, which is reported and never joined".into();
+    }
+    if o.health.touches_claim {
+        return "a gap, a loss, an unreadable input or a clock step touches the claim's window".into();
+    }
+    match ev.profile {
+        Profile::S => "the software source agrees or says nothing, and has no matching record".into(),
+        Profile::K => "the attested records do not decide this claim (not reached, ambiguous, outside \
+             the armed coverage, unstable or unattested)"
+            .into(),
+    }
+}
+
+fn verdict_words(o: &Outcome, ev: &Evidence, claim: Option<&Claim>) -> String {
     match &o.kind {
-        Kind::Agrees { strength, caps, .. } => {
-            let caps: Vec<&str> = caps.iter().map(cap_words).collect();
+        Kind::Agrees { strength, caps, also, .. } => {
+            let also = if *also > 0 { format!("; {also} further matching record(s)") } else { String::new() };
             format!(
-                "CORROBORATED - the observer recorded an exec with this pid and this executable.\n      \
-                 strength SOFTWARE ({}); held there because: {}",
-                strength.get(),
-                caps.join("; ")
+                "CORROBORATED - the source recorded an exec of this pid and this file inside the claim's window{also}.\n        {}",
+                caps_line(strength.get(), caps)
             )
         }
-        Kind::Disagrees { detail: Detail::SubjectMismatch } => {
-            "CONTRADICTED (subject mismatch) - the observer recorded this pid running a different executable."
-                .into()
+        Kind::Disagrees { detail: Detail::SubjectMismatch, strength, caps } => format!(
+            "CONTRADICTED (subject mismatch) - attested records show this pid running a different file inside the claim's window.\n        {}",
+            caps_line(strength.get(), caps)
+        ),
+        Kind::Disagrees { detail: Detail::Unobserved, strength, caps } => format!(
+            "CONTRADICTED (unobserved) - the attested record continues past the claim's window with nothing touching it, \
+             and holds no exec of this pid in it.\n        {}",
+            caps_line(strength.get(), caps)
+        ),
+        Kind::NotCovered { windows } => {
+            let w: Vec<String> = windows
+                .iter()
+                .map(|(lo, hi)| format!("[{lo}, {})", hi.map_or("open".to_string(), |h| h.to_string())))
+                .collect();
+            format!("NOT COVERED - the claim's window lies outside the source's coverage {}.", w.join(" "))
         }
-        Kind::Disagrees { detail: Detail::Unobserved } => {
-            "CONTRADICTED (unobserved) - the observer's record continues past the claim's time with no gap \
-             touching it, and holds no exec with this pid."
-                .into()
-        }
-        Kind::NotCovered { coverage_from } => {
-            format!("NOT COVERED - the claim's time is before the observer's coverage began ({coverage_from} ms).")
-        }
-        Kind::NothingToCompare => {
-            let why = if o.path == Delivery::NothingArrived {
-                "no valid sighting arrived".to_string()
-            } else if o.health.touches_claim && unparsed > 0 {
-                format!(
-                    "the record holds {unparsed} audit line(s) the observer could not parse, \
-                     any of which may be this exec"
-                )
-            } else if o.health.touches_claim {
-                "a gap in the record touches the claim's time".to_string()
-            } else {
-                "the record does not reach far enough, or does not identify one observer instance"
-                    .to_string()
-            };
-            format!("NOTHING TO COMPARE - {why}.")
-        }
+        Kind::NothingToCompare => format!("NOTHING TO COMPARE - {}.", nothing_why(o, ev, claim)),
     }
 }
 
-fn status_field(text: &Option<String>, field: &str) -> Option<u64> {
-    text.as_ref()?
-        .lines()
-        .find_map(|l| l.strip_prefix(field)?.strip_prefix(' ')?.trim().parse().ok())
+fn exec_text(e: &ExecRecord) -> String {
+    let mut t = escape(&e.path);
+    if e.path_truncated {
+        t.push_str(" [path truncated in the record]");
+    }
+    if e.path_unresolved {
+        t.push_str(" [path unresolved]");
+    }
+    if e.interpreted {
+        t.push_str(" [interpreted: the path is the interpreter's]");
+    }
+    if let Some(ns) = e.ns.filter(|n| *n != 0) {
+        let _ = write!(t, " [ns {ns:#04x}]");
+    }
+    t
+}
+
+fn record_line(e: &ExecRecord) -> String {
+    let ppid = e.ppid.map_or("?".to_string(), |p| p.to_string());
+    let when = if e.lo == e.hi { format!("at {}", e.lo) } else { format!("in [{}, {}]", e.lo, e.hi) };
+    let uid = e.uid.map_or(String::new(), |u| format!(" uid {u}"));
+    format!("index {} pid {} ppid {ppid}{uid} {when} exe {}", e.position, e.pid, exec_text(e))
+}
+
+fn s_section(r: &mut String, ev: &Evidence, f: &Frames) {
+    let _ = writeln!(r, "\nsource S: the audit observer (profile S, unsigned)");
+    let delivery = if ev.valid == 0 { "nothing arrived" } else { "direct (declared by the deployment)" };
+    let _ = writeln!(r, "  delivery path: {delivery}");
+    let _ = writeln!(r, "  records read {}, valid {}, excluded {}", f.records.len(), ev.valid, ev.excluded);
+    let _ = writeln!(r, "  gaps {}, chain breaks {}, forks {}", ev.gaps, ev.breaks, ev.forks);
+    if let Some(n) = f.unreadable_after {
+        let _ = writeln!(r, "  sightings file unreadable after record {n}");
+    }
+    let _ = writeln!(r, "  observer instances {}", ev.instances.len());
+    for i in &ev.instances {
+        match (i.cov_from, i.boot, i.tolerance_ns) {
+            (Some(from), Some(boot), Some(tol)) => {
+                let mode = if i.mediated { "Mediated" } else { "Sampled" };
+                let _ = writeln!(
+                    r,
+                    "  instance {}: coverage mode {mode}, from {from} ns on the boot clock, boot {}, tolerance {tol} ns (self-declared)",
+                    hex(&i.id[..4]),
+                    hex(&boot)
+                );
+            }
+            _ => {
+                let _ = writeln!(r, "  instance {}: start record missing or inconsistent", hex(&i.id[..4]));
+            }
+        }
+        let _ = writeln!(r, "    parse rejects {}, clock steps {}", i.rejects, i.clock_steps);
+        let ended = match i.ended {
+            None => "no stream-ended record (a clean stop leaves none)",
+            Some(ENDED_ROTATED) => "YES - the audit log was rotated or removed",
+            Some(ENDED_SHRUNK) => "YES - the audit log shrank",
+            Some(ENDED_READ_ERROR) => "YES - read error",
+            Some(_) => "YES - unknown reason",
+        };
+        let _ = writeln!(r, "    stream ended: {ended}");
+        let _ = writeln!(r, "    execution sightings {}", i.records.len());
+    }
+}
+
+fn k_section(r: &mut String, ev: &Evidence, k: &KInputs) {
+    let fx = &ev.facts;
+    let _ = writeln!(r, "\nsource K: kernel exec records in IMA, PCR 13 (profile K)");
+    let _ = writeln!(r, "  bundle: {}", escape(k.label.as_bytes()));
+    let _ = writeln!(
+        r,
+        "  attestation key: pinned locally by the operator from {}, not taken from the bundle",
+        escape(k.ak_label.as_bytes())
+    );
+    if fx.ak_usable {
+        let _ = writeln!(r, "    point {}", hex(&k.ak[26..]));
+    } else {
+        let _ = writeln!(
+            r,
+            "    UNUSABLE - not a 91-byte P-256 key in the expected form: every quote excluded, every record unanchored"
+        );
+    }
+    let delivery = if ev.valid == 0 { "nothing arrived" } else { "direct (declared by the deployment)" };
+    let _ = writeln!(r, "  delivery path: {delivery}");
+    let _ = writeln!(r, "  quotes {}, valid {}", fx.quotes, fx.quotes_valid);
+    let _ = writeln!(r, "  PCR-13 entries {}, attested {}", fx.entries, fx.attested);
+    let tail = if fx.tail_empty {
+        "a valid quote follows the last record".to_string()
+    } else {
+        format!("{} entries after the last valid quote: SOFTWARE, unanchored", fx.entries - fx.attested)
+    };
+    let _ = writeln!(r, "  tail: {tail}");
+    let interval = match fx.interval_s {
+        None => "not recorded".to_string(),
+        Some(0) => "a single round".to_string(),
+        Some(s) => format!("every {s} s"),
+    };
+    let _ = writeln!(r, "  quote interval: {interval}");
+    let nonce = match fx.nonce_quoted {
+        None => "no auditor nonce given",
+        Some(true) => "a valid quote carries the auditor's nonce",
+        Some(false) => "NO valid quote carries the auditor's nonce",
+    };
+    let _ = writeln!(r, "  nonce: {nonce}");
+    let boot = k.boot_id.map_or("not readable".to_string(), |b| hex(&b));
+    let _ = writeln!(r, "  boot id (as the collector copied it): {boot}");
+    let resets: Vec<String> = fx.reset_counts.iter().map(u32::to_string).collect();
+    let _ = writeln!(r, "  resetCount of the valid quotes: {}", resets.join(" "));
+    for p in &fx.pcr7 {
+        let _ = writeln!(r, "  PCR 7 (quoted, not appraised): {}", hex(p));
+    }
+    let _ = writeln!(r, "  excluded (entries and quotes) {}, gaps {}, forks {}", ev.excluded, ev.gaps, ev.forks);
+    if let Some(n) = fx.list_unreadable_after {
+        let _ = writeln!(r, "  measurement list unreadable after entry {n}");
+    }
+    if ev.breaks > 0 {
+        let _ = writeln!(r, "  EVIDENCE BROKEN: {} break(s)", ev.breaks);
+        for b in &fx.break_reasons {
+            let _ = writeln!(r, "    {}", escape_line(b));
+        }
+    } else {
+        let _ = writeln!(r, "  breaks 0");
+    }
+    let scope: Vec<String> = k.scope.iter().map(u32::to_string).collect();
+    let _ = writeln!(r, "  scope of the unclaimed list: uid or euid in {{{}}}", scope.join(", "));
+    let _ = writeln!(r, "  loads {}", ev.instances.len());
+    for i in &ev.instances {
+        let opt = |v: Option<u64>| v.map_or("-".to_string(), |x| x.to_string());
+        let version = if i.v1 { " (record v1: reported, never joined)" } else { "" };
+        let end = if i.unloaded { "UNLOAD" } else { "no UNLOAD" };
+        let _ = writeln!(
+            r,
+            "  load {}{version}: loaded {}, armed {}, close {}, unloaded {}, {end}; exec records {}, losses {}, gaps {}",
+            hex(&i.id[..4]),
+            opt(i.lo_c),
+            opt(i.cov_from),
+            opt(i.close_c),
+            opt(i.hi_c),
+            i.records.len(),
+            i.losses.iter().map(|l| l.count).sum::<u64>(),
+            i.gaps.len()
+        );
+    }
+}
+
+/// Every exec record of a source with its instance, by position.
+fn records(ev: &Evidence) -> Vec<(&anchorstamp_verify::Instance, &ExecRecord)> {
+    ev.instances.iter().flat_map(|i| i.records.iter().map(move |e| (i, e))).collect()
+}
+
+fn claim_lines(r: &mut String, name: &str, ev: &Evidence, claim: &[u8], interval: Option<u32>) {
+    let o = join(Some(claim), ev, DeclaredPath::Direct);
+    let c = Claim::parse(claim);
+    let _ = writeln!(r, "    {name}: {}", verdict_words(&o, ev, c.as_ref()));
+    if matches!(o.kind, Kind::Agrees { .. } | Kind::Disagrees { .. }) {
+        let _ = writeln!(r, "        {}", anchor_words(&o.anchor, interval));
+    }
+    if o.health.touches_claim {
+        let _ = writeln!(r, "        a gap, loss, unreadable input or clock step touches this claim");
+    }
+    if o.health.evidence_broken {
+        let _ = writeln!(r, "        evidence broken");
+    }
+    let Some(c) = c else { return };
+    for (i, e) in records(ev) {
+        if !same_boot(&c, i) || !candidate(&c, e) {
+            continue;
+        }
+        let how = if matches(&c, e) { "seen" } else { "this pid in the window, not matching" };
+        let _ = writeln!(r, "        {how}: {}", record_line(e));
+    }
+}
+
+fn unclaimed_lines(r: &mut String, name: &str, ev: &Evidence, claims: &[&[u8]], scope: &[u32]) {
+    let list = account(claims, ev, scope);
+    let _ = writeln!(r, "  {name} ({})", list.len());
+    let holes: u64 = ev.instances.iter().map(|i| i.holes).sum();
+    if holes > 0 || ev.gaps > 0 {
+        let _ = writeln!(r, "    unclaimed list incomplete: {} hole(s), {} gap(s)", holes, ev.gaps);
+    }
+    let parsed: Vec<Claim> = claims.iter().filter_map(|c| Claim::parse(c)).collect();
+    let all = records(ev);
+    let mut children = Vec::new();
+    let mut others = Vec::new();
+    for u in &list {
+        let Some((_, e)) = all.iter().find(|(i, e)| i.id == u.instance && e.position == u.index) else {
+            continue;
+        };
+        // a claimed exec that could be the parent: its pid is this record's
+        // parent and it was not later
+        let parent = all.iter().find(|(i, p)| {
+            Some(p.pid) == e.ppid && p.lo <= e.lo && parsed.iter().any(|c| same_boot(c, i) && matches(c, p))
+        });
+        let line = record_line(e);
+        match parent {
+            Some((_, p)) => children.push(format!("    child of claimed pid {}: {line}", p.pid)),
+            None => others.push(format!("    {line}")),
+        }
+    }
+    let _ = writeln!(r, "   child of a claimed exec (parent pid, not earlier) ({})", children.len());
+    for l in &children {
+        let _ = writeln!(r, "{l}");
+    }
+    let _ = writeln!(r, "   other execs ({})", others.len());
+    for l in &others {
+        let _ = writeln!(r, "{l}");
+    }
+}
+
+fn status_field(text: Option<&String>, field: &str) -> Option<u64> {
+    text?.lines().find_map(|l| l.strip_prefix(field)?.strip_prefix(' ')?.trim().parse().ok())
 }
 
 /// Render the report.
 pub fn render(run_label: &str, input: &Inputs) -> String {
     let mut r = String::new();
-    let scheme = Demo;
-    let anchors: Vec<[u8; 32]> = input.anchor.into_iter().collect();
     let sf = frames(&input.sightings);
     let cf = frames(&input.claims);
-    let st = Stream::validate(&sf.records, &anchors);
-    let health = st.health();
+    let s_ev = s::build(&sf.records);
+    let k_ev = input.kernel.as_ref().map(KInputs::evidence);
 
-    let _ = writeln!(r, "anchorstamp proof-of-concept report");
-    let _ = writeln!(r, "run: {run_label}");
-    let _ =
-        writeln!(r, "scheme: DEMO (proof-of-concept only; not accepted by a conforming reader)");
-    let delivery =
-        if st.is_empty() { "nothing arrived" } else { "direct (declared by the deployment)" };
-    let _ = writeln!(r, "delivery path: {delivery}");
+    let _ = writeln!(r, "{DECLARATION}");
+    let _ = writeln!(r, "anchorstamp report");
+    let _ = writeln!(r, "run: {}", escape_line(run_label));
+    let _ = writeln!(r, "scheme: LINUX_EXEC");
+    let sources = if k_ev.is_some() { "S (run directory), K (bundle)" } else { "S (run directory); no kernel bundle given" };
+    let _ = writeln!(r, "sources: {sources}");
     let _ = writeln!(r, "{ANCHORING}");
-    if input.anchor.is_none() {
-        let _ = writeln!(r, "anchor: MISSING or not 32 bytes - no record can be validated.");
-    }
     for n in &input.notes {
         let _ = writeln!(r, "input file {}", escape_line(n));
     }
 
-    // stream health
-    let _ = writeln!(r, "\nstream health");
-    let valid: usize = st.instances().map(|i| i.records().count()).sum();
-    let _ = writeln!(
-        r,
-        "  records read {}, valid {valid}, excluded {}",
-        sf.records.len(),
-        health.excluded
-    );
-    let _ = writeln!(
-        r,
-        "  gaps {}, chain breaks {}, forks {}",
-        health.gaps, health.breaks, health.forks
-    );
-    let _ = writeln!(r, "  observer instances {}", st.instance_count());
-    if let Some(n) = sf.unreadable_after {
-        let _ = writeln!(r, "  sightings file unreadable after record {n}");
+    s_section(&mut r, &s_ev, &sf);
+    if let (Some(ev), Some(k)) = (&k_ev, &input.kernel) {
+        k_section(&mut r, ev, k);
     }
+
+    // claims: one outcome per claim per source
+    let _ = writeln!(r, "\nclaims ({})", cf.records.len());
     if let Some(n) = cf.unreadable_after {
         let _ = writeln!(r, "  claims file unreadable after record {n}");
     }
-    let mut execs: Vec<Seen> = Vec::new();
-    let mut unparsed = 0u64;
-    for inst in st.instances() {
-        unparsed += scheme.unparsed(inst);
-        if let Some(ms) = scheme.coverage_from_ms(inst) {
-            let _ = writeln!(r, "  coverage: mode Mediated, from {ms} ms (self-declared)");
-        } else {
-            let _ = writeln!(r, "  coverage: start record missing");
-        }
-        let mut ended = None;
-        for (index, v) in inst.records() {
-            let p = &v.parts;
-            if p.subject.scheme() == SchemeTag::OBSERVER {
-                if p.observed.class == CLASS_STREAM_ENDED {
-                    ended = p.observed.data.first().copied();
-                }
-            } else if let Some(s) = seen(index, v).filter(|_| scheme.is_execution(v)) {
-                execs.push(s);
-            }
-        }
-        let _ = writeln!(r, "  parse rejects {}", scheme.unparsed(inst));
-        let _ = writeln!(
-            r,
-            "  stream ended: {}",
-            match ended {
-                None => "no stream-ended record (a clean stop leaves none)",
-                Some(ENDED_ROTATED) => "YES - the audit log was rotated or removed",
-                Some(ENDED_SHRUNK) => "YES - the audit log shrank",
-                Some(ENDED_READ_ERROR) => "YES - read error",
-                Some(_) => "YES - unknown reason",
-            }
-        );
-    }
-    let _ = writeln!(r, "  execution sightings {}", execs.len());
-
-    // claims
-    let _ = writeln!(r, "\nclaims ({})", cf.records.len());
-    let mut parents: Vec<(usize, &Seen)> = Vec::new();
+    let interval = k_ev.as_ref().and_then(|e| e.facts.interval_s);
     for (n, c) in cf.records.iter().enumerate() {
-        let o = join_stream(Some(c), &st, DeclaredPath::Direct, &scheme);
-        let subj = decode_joinref(c).ok().and_then(|s| DemoSubject::parse(&s));
-        let pid = subj.map(|s| s.pid.to_string()).unwrap_or_else(|| "?".into());
-        let _ = writeln!(r, "  #{} pid {pid}  {}", n + 1, verdict_words(&o, unparsed));
-        if let Some(s) = subj {
-            let same_pid: Vec<&Seen> = execs.iter().filter(|e| e.subject.pid == s.pid).collect();
-            for e in &same_pid {
-                if e.subject.exe_digest == s.exe_digest {
-                    parents.push((n + 1, e));
-                    let _ = writeln!(r, "      seen: index {} exe {}", e.index, exe_text(e));
-                } else {
-                    let _ = writeln!(
-                        r,
-                        "      this pid seen with another executable: index {} exe {}",
-                        e.index,
-                        exe_text(e)
-                    );
-                }
-            }
-        }
-        let h = o.health;
-        if h.touches_claim && unparsed > 0 {
-            let _ = writeln!(r, "      unparsed audit lines touch this claim");
-        } else if h.touches_claim {
-            let _ = writeln!(r, "      a gap touches this claim");
+        let head = match Claim::parse(c) {
+            Some(p) => format!("pid {} window [{}, {}] boot {}", p.pid, p.t0, p.t_reap, hex(&p.boot)),
+            None => "not a LINUX_EXEC reference".into(),
+        };
+        let _ = writeln!(r, "  #{} {head}", n + 1);
+        claim_lines(&mut r, "S", &s_ev, c, None);
+        if let Some(ev) = &k_ev {
+            claim_lines(&mut r, "K", ev, c, interval);
         }
     }
 
-    // unclaimed
-    let unclaimed = account_stream(&cf.records, &st, &scheme);
-    let _ = writeln!(r, "\nunclaimed execs ({})", unclaimed.len());
-    if unparsed > 0 {
-        let _ = writeln!(r, "  unclaimed list incomplete: {unparsed} records unparsed");
-    }
-    let mut children: Vec<String> = Vec::new();
-    let mut others: Vec<String> = Vec::new();
-    for u in &unclaimed {
-        let Some(e) = execs.iter().find(|e| e.index == u.index) else { continue };
-        let line = format!(
-            "index {} pid {} ppid {} time {} exe {}",
-            e.index,
-            e.subject.pid,
-            e.ppid,
-            e.subject.time_ms,
-            exe_text(e)
-        );
-        // the latest claimed exec that could be the parent
-        let parent = parents
-            .iter()
-            .filter(|(_, p)| p.subject.pid == e.ppid && e.subject.time_ms >= p.subject.time_ms)
-            .max_by_key(|(_, p)| p.subject.time_ms);
-        match parent {
-            Some((n, _)) => children.push(format!("    child of claim #{n}: {line}")),
-            None => others.push(format!("    {line}")),
-        }
-    }
-    let _ = writeln!(
-        r,
-        "  child of a claimed exec (same parent pid, not earlier) ({})",
-        children.len()
-    );
-    for l in &children {
-        let _ = writeln!(r, "{l}");
-    }
-    let _ = writeln!(r, "  other execs of the measured account ({})", others.len());
-    for l in &others {
-        let _ = writeln!(r, "{l}");
+    // unclaimed, per source
+    let _ = writeln!(r, "\nunclaimed execs");
+    unclaimed_lines(&mut r, "S: every exec sighting of the run's audit key", &s_ev, &cf.records, &[]);
+    if let (Some(ev), Some(k)) = (&k_ev, &input.kernel) {
+        unclaimed_lines(&mut r, "K: execs in scope", ev, &cf.records, &k.scope);
     }
 
-    // pid reuse
-    let mut pids: Vec<u32> = execs.iter().map(|e| e.subject.pid).collect();
+    // pid reuse, software source
+    let mut pids: Vec<u32> = records(&s_ev).iter().map(|(_, e)| e.pid).collect();
     pids.sort_unstable();
     let total = pids.len();
     pids.dedup();
-    let _ = writeln!(r, "\npid reuse: {} execution sightings, {} distinct pids", total, pids.len());
+    let _ = writeln!(r, "\npid reuse (S): {} execution sightings, {} distinct pids", total, pids.len());
 
     // audit counters
     let _ = writeln!(r, "\naudit counters (auditctl -s, recorded by the harness)");
     for f in ["lost", "backlog"] {
-        let b = status_field(&input.harness.audit_before, f);
-        let a = status_field(&input.harness.audit_after, f);
+        let b = status_field(input.harness.audit_before.as_ref(), f);
+        let a = status_field(input.harness.audit_after.as_ref(), f);
         let _ = match (b, a) {
             (Some(b), Some(a)) => {
-                writeln!(r, "  {f}: before {b}, after {a}, delta {}", a as i128 - b as i128)
+                writeln!(r, "  {f}: before {b}, after {a}, delta {}", i128::from(a) - i128::from(b))
             }
             _ => writeln!(r, "  {f}: not recorded"),
         };
     }
 
     // refusals
-    let _ = writeln!(
-        r,
-        "\nrefusal tests (the measured account's own log; it can write anything there)"
-    );
+    let _ = writeln!(r, "\nrefusal tests (the measured account's own log; it can write anything there)");
     let lines: Vec<&str> = input
         .harness
         .agent_log
         .as_deref()
-        .map(|l| {
-            l.lines().filter(|l| l.starts_with("REFUSAL ") || l.starts_with("ESCALATE ")).collect()
-        })
+        .map(|l| l.lines().filter(|l| l.starts_with("REFUSAL ") || l.starts_with("ESCALATE ")).collect())
         .unwrap_or_default();
     if lines.is_empty() {
         let _ = writeln!(r, "  none run");
@@ -452,9 +671,11 @@ pub fn render(run_label: &str, input: &Inputs) -> String {
         OUTSIDE_READER,
         SELF_DECLARED,
         LIBRARY,
+        BOOT_ASSERTED,
         LIMIT_PID_REUSE,
         LIMIT_CAUSATION,
         LIMIT_SCRIPTS,
+        LIMIT_ROOT,
     ] {
         let _ = writeln!(r, "  {s}");
     }

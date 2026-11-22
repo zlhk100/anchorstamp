@@ -29,10 +29,12 @@ pub enum Step {
     Honest { agent: String, argv: Vec<String> },
     /// Run with std::process; nothing is claimed.
     Shadow { agent: String, argv: Vec<String> },
-    /// Claim an exec that never ran: a pid no process can have, the run's
-    /// start time, and the digest of `path`.
+    /// Claim an exec that never ran: a pid no process can have, a window
+    /// of one instant read when the claim is forged, and the digest of
+    /// `path` taken from a real claim.
     ForgeUnobserved { agent: String, path: String },
-    /// Run `run` unclaimed, then claim its pid with the digest of `claim`.
+    /// Run `run` unclaimed, then claim its pid and its window (boot clock
+    /// before the spawn, after the reap) with the digest of `claim`.
     ForgeMismatch { agent: String, run: String, claim: String },
     /// Run through the library; its own children are left unclaimed.
     Pipeline { agent: String, argv: Vec<String> },

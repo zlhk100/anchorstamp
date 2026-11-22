@@ -71,8 +71,9 @@ fn three_claims_and_exits_pass_through() {
     assert_eq!(records.len(), 3, "exactly three framed references");
     for (rec, pid) in records.iter().zip(&claimed_pids) {
         let s = decode_joinref(rec).expect("a join reference");
-        assert_eq!(s.scheme(), SchemeTag::DEMO);
+        assert_eq!(s.scheme(), SchemeTag::LINUX_EXEC);
         let b = s.bytes();
+        assert_eq!(b.len(), 60);
         assert_eq!(u32::from_be_bytes(b[0..4].try_into().expect("4 bytes")), *pid);
     }
 }

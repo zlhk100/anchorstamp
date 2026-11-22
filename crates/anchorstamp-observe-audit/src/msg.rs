@@ -1,11 +1,10 @@
 //! Every line the observer writes to its log. Numbers and fixed words
-//! only: no key material, no input bytes. Kept here so a test can produce
-//! each one and search it.
+//! only, no input bytes. Kept here so a test can produce each one.
 
 pub const PREFIX: &str = "observe-audit: ";
 pub const USAGE: &str = "usage: anchorstamp-observe-audit --audit-log PATH --sink DIR --key KEY";
-pub const LEAK_TEST: &str = "LEAK-TEST BUILD: key exported for the leak search";
-pub const ANCHOR_WRITTEN: &str = "anchor written; reading";
+/// What this source declares itself to be.
+pub const DECLARATION: &str = "anchorstamp specification 0.4, layout 1, source profile S";
 
 pub fn error(what: &str) -> String {
     format!("error {what}")
@@ -15,13 +14,19 @@ pub fn ptrace_scope(scope: u32) -> String {
     format!("ptrace_scope={scope}")
 }
 
-pub fn start(instance_hex: &str, coverage_from_ms: u64, offset: u64) -> String {
-    format!("start instance={instance_hex} coverage_from_ms={coverage_from_ms} offset={offset}")
+pub fn start(instance_hex: &str, cov_from: u64, offset: u64) -> String {
+    format!("start {DECLARATION} instance={instance_hex} cov_from={cov_from} offset={offset}")
 }
 
-/// `dumpable` is the value PR_GET_DUMPABLE returned after the drop.
+/// `dumpable` is the value `PR_GET_DUMPABLE` returned after the drop.
 pub fn dropped(dumpable: i32) -> String {
     format!("dropped uid=65534 gid=65534 groups=0 dumpable={dumpable}")
+}
+
+/// The source is reading: logged after the drop and the instance-start
+/// record. The harness waits for this line.
+pub fn ready(instance_hex: &str, cov_from: u64) -> String {
+    format!("ready instance={instance_hex} cov_from={cov_from}")
 }
 
 pub fn sighting(index: u64, pid: u32, ppid: u32, syscall: u32, exe_len: usize) -> String {
@@ -30,6 +35,10 @@ pub fn sighting(index: u64, pid: u32, ppid: u32, syscall: u32, exe_len: usize) -
 
 pub fn parse_reject(index: u64, count: u64) -> String {
     format!("parse-reject index={index} count={count}")
+}
+
+pub fn clock_step(index: u64, change_ns: u64) -> String {
+    format!("clock-step index={index} change_ns={change_ns}")
 }
 
 pub fn stream_ended(reason: u8, why: &str, execs: u64, rejects: u64, offset: u64) -> String {

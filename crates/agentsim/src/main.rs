@@ -16,7 +16,6 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, exit};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use agentsim::{Step, parse};
 use anchorstamp::{Session, open};
@@ -32,12 +31,20 @@ struct Ctx {
     session: Arc<Mutex<Session>>,
     claims: Arc<Mutex<File>>,
     run_dir: PathBuf,
-    run_start_ms: u64,
     refusal_failed: bool,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+/// `CLOCK_BOOTTIME` in nanoseconds: the clock the `LINUX_EXEC` scheme speaks.
+fn boottime_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: a valid clock id and a pointer to a local timespec.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut ts) } != 0 {
+        eprintln!("agentsim: CLOCK_BOOTTIME unreadable");
+        exit(1);
+    }
+    let secs = u64::try_from(ts.tv_sec).unwrap_or(0);
+    let nanos = u64::try_from(ts.tv_nsec).unwrap_or(0);
+    secs * 1_000_000_000 + nanos
 }
 
 fn out(line: &str) {
@@ -56,8 +63,10 @@ fn append(claims: &Mutex<File>, j: &JoinRef) {
     }
 }
 
+/// `LINUX_EXEC` subject: pid u32 · t0 u64 · `t_reap` u64 · digest \[32\] ·
+/// boot \[8\], big-endian.
 fn pid_of(j: &JoinRef) -> u32 {
-    u32::from_be_bytes(j.subject().bytes()[0..4].try_into().expect("DEMO subject"))
+    u32::from_be_bytes(j.subject().bytes()[0..4].try_into().expect("LINUX_EXEC subject"))
 }
 
 /// Run through the library; append the reference if one came back.
@@ -105,17 +114,24 @@ fn unclaimed(agent: &str, mode: &str, argv: &[String]) -> Option<u32> {
     }
 }
 
-/// A claim built by the forger from parts it chose.
-fn forged(pid: u32, time_ms: u64, digest: &[u8]) -> JoinRef {
-    let mut b = [0u8; 32];
+/// A claim built by the forger from parts it chose, in the `LINUX_EXEC`
+/// scheme, with this boot's boot id taken from a real claim.
+fn forged(pid: u32, t0: u64, t_reap: u64, real: &JoinRef) -> JoinRef {
+    let r = real.subject().bytes();
+    let mut b = [0u8; 60];
     b[0..4].copy_from_slice(&pid.to_be_bytes());
-    b[4..12].copy_from_slice(&time_ms.to_be_bytes());
-    b[12..32].copy_from_slice(digest);
-    JoinRef::new(SubjectRef::new(SchemeTag::DEMO, &b).expect("32 bytes"))
+    b[4..12].copy_from_slice(&t0.to_be_bytes());
+    b[12..20].copy_from_slice(&t_reap.to_be_bytes());
+    b[20..60].copy_from_slice(&r[20..60]); // the real claim's digest and boot
+    JoinRef::new(SubjectRef::new(SchemeTag::LINUX_EXEC, &b).expect("60 bytes"))
 }
 
-fn digest_of(j: &JoinRef) -> [u8; 20] {
-    j.subject().bytes()[12..32].try_into().expect("DEMO subject")
+/// Run `argv` with `std::process`, unclaimed, reading the boot clock before
+/// the spawn and after the reap: (pid, t0, `t_reap`).
+fn unclaimed_timed(agent: &str, mode: &str, argv: &[String]) -> Option<(u32, u64, u64)> {
+    let t0 = boottime_ns();
+    let pid = unclaimed(agent, mode, argv)?;
+    Some((pid, t0, boottime_ns()))
 }
 
 fn evade_execveat(agent: &str, path: &str) {
@@ -367,11 +383,11 @@ fn run(ctx: &mut Ctx, steps: &[Step]) {
                 ) else {
                     break 'step;
                 };
-                let j = forged(IMPOSSIBLE_PID, ctx.run_start_ms, &digest_of(&real));
+                let now = boottime_ns();
+                let j = forged(IMPOSSIBLE_PID, now, now, &real);
                 append(&ctx.claims, &j);
                 out(&format!(
-                    "FORGED agent={agent} kind=unobserved pid={IMPOSSIBLE_PID} time_ms={}",
-                    ctx.run_start_ms
+                    "FORGED agent={agent} kind=unobserved pid={IMPOSSIBLE_PID} t0={now} t_reap={now}"
                 ));
             }
             Step::ForgeMismatch { agent, run, claim } => 'step: {
@@ -384,13 +400,15 @@ fn run(ctx: &mut Ctx, steps: &[Step]) {
                 ) else {
                     break 'step;
                 };
-                let Some(pid) = unclaimed(agent, "forger-run", std::slice::from_ref(run)) else {
+                let Some((pid, t0, t_reap)) =
+                    unclaimed_timed(agent, "forger-run", std::slice::from_ref(run))
+                else {
                     break 'step;
                 };
-                let j = forged(pid, now_ms(), &digest_of(&real));
+                let j = forged(pid, t0, t_reap, &real);
                 append(&ctx.claims, &j);
                 out(&format!(
-                    "FORGED agent={agent} kind=mismatch pid={pid} ran={run} claimed={claim}"
+                    "FORGED agent={agent} kind=mismatch pid={pid} t0={t0} t_reap={t_reap} ran={run} claimed={claim}"
                 ));
             }
             Step::EvadeExecveat { agent, path } => evade_execveat(agent, path),
@@ -405,7 +423,6 @@ fn run(ctx: &mut Ctx, steps: &[Step]) {
 }
 
 fn main() {
-    let run_start_ms = now_ms();
     let a: Vec<String> = std::env::args().collect();
     if a.len() != 3 {
         eprintln!("usage: agentsim <scenario> <run-dir>");
@@ -430,12 +447,11 @@ fn main() {
             eprintln!("agentsim: cannot create claims file: {}", e.kind());
             exit(2)
         });
-    out(&format!("START run_start_ms={run_start_ms} steps={}", steps.len()));
+    out(&format!("START boottime_ns={} steps={}", boottime_ns(), steps.len()));
     let mut ctx = Ctx {
         session: Arc::new(Mutex::new(open())),
         claims: Arc::new(Mutex::new(claims)),
         run_dir,
-        run_start_ms,
         refusal_failed: false,
     };
     run(&mut ctx, &steps);
