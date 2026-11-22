@@ -132,12 +132,16 @@ static void asx_put_header(u8 *buf, u8 kind)
 	memcpy(buf + ASX_OFF_LOAD_ID, asx_load_id, ASX_LOAD_ID_LEN);
 }
 
-/* Hand one record to IMA. seq advances only when IMA measured it. */
+/*
+ * Hand one record to IMA. hash is false: the buffer IMA appends to its list
+ * is the record itself, not a digest of it. seq advances only when IMA
+ * measured it.
+ */
 static int asx_measure(const u8 *buf, size_t len)
 {
 	int ret;
 
-	ret = ima_measure_critical_data(ASX_LABEL, ASX_EVENT, buf, len, true,
+	ret = ima_measure_critical_data(ASX_LABEL, ASX_EVENT, buf, len, false,
 					NULL, 0);
 	if (!ret)
 		asx_seq++;

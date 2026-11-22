@@ -11,7 +11,8 @@ TPM. It refuses to load when IMA has no policy rule for its label.
 ## Records
 
 Each record is an IMA critical-data buffer with label `anchorstamp`,
-event `exec`, template `ima-buf`. Format version 1: magic `ASX1`, packed,
+event `exec`, template `ima-buf`. IMA's list carries the record itself,
+not a digest of it. Format version 1: magic `ASX1`, packed,
 every multi-byte integer little-endian. The header is magic (4), kind (1),
 seq (8, per load, LOAD is 0), load_id (16, random per load).
 

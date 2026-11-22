@@ -9,6 +9,7 @@ decoder, so a decoder that drifts from the layout fails.
 
 import hashlib
 import importlib.util
+import re
 import struct
 import sys
 import tempfile
@@ -186,6 +187,22 @@ class ListAndReplay(unittest.TestCase):
         e = va.parse_list(buf_entry(load_rec(), dng=b"sha256:\x00" + bytes(32)))[0]
         with self.assertRaises(va.InputError):
             va.anchor_record(e)
+
+    def test_hashed_buffer_is_not_a_record(self):
+        # What IMA lists when the module passes hash true: the buffer is
+        # SHA-256 of the record, not the record.
+        hashed = hashlib.sha256(load_rec()).digest()
+        with self.assertRaises(va.InputError):
+            va.anchor_record(va.parse_list(buf_entry(hashed))[0])
+
+    def test_shim_measures_the_record_itself(self):
+        # The module's one IMA call passes the record buffer with hash false.
+        src = (Path(__file__).resolve().parent.parent
+               / "observer/kernel/anchorstamp_exec/anchorstamp_exec.c").read_text()
+        calls = re.findall(r"ima_measure_critical_data\(([^;]*)\);", src)
+        self.assertEqual(len(calls), 1)
+        args = [a.strip() for a in calls[0].split(",")]
+        self.assertEqual(args, ["ASX_LABEL", "ASX_EVENT", "buf", "len", "false", "NULL", "0"])
 
     def test_foreign_template_and_event(self):
         with self.assertRaises(va.InputError):
