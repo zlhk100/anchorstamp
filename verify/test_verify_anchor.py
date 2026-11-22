@@ -7,8 +7,10 @@ Records are packed here from the published layout, independently of the
 decoder, so a decoder that drifts from the layout fails.
 """
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import re
 import struct
 import sys
@@ -223,6 +225,13 @@ class ListAndReplay(unittest.TestCase):
         self.assertIn("seq 1 -> 3", f[0])
         self.assertIn("not LOAD", f[1])
 
+    def test_record_after_unload(self):
+        recs = [(i, va.decode_record(r)) for i, r in enumerate([load_rec(), unload_rec(1),
+                                                                 exec_rec(2, b"/a")])]
+        f = va.sequence_findings(recs)
+        self.assertEqual(len(f), 1)
+        self.assertIn("record after UNLOAD", f[0])
+
     def test_contiguous_has_no_gap(self):
         recs = [(i, va.decode_record(r)) for i, r in enumerate(RECORDS)]
         self.assertEqual(va.sequence_findings(recs), [])
@@ -315,6 +324,49 @@ class Bundle(unittest.TestCase):
         recs = [*RECORDS[:2], b"ASX1\x09" + bytes(24)]
         broken, _ = self.run_bundle([("head", 3, None)], records=recs)
         self.assertTrue(any("unknown kind" in b for b in broken))
+
+    def test_seq_gap_is_broken(self):
+        recs = [*RECORDS[:2], exec_rec(3, b"/a")]
+        broken, _ = self.run_bundle([("head", 3, None)], records=recs)
+        self.assertTrue(any("seq 1 -> 3" in b for b in broken))
+
+    def test_missing_load_is_broken(self):
+        broken, _ = self.run_bundle([("head", 6, None)], records=RECORDS[1:])
+        self.assertTrue(any("not LOAD seq=0" in b for b in broken))
+
+    def test_record_after_unload_is_broken(self):
+        recs = [*RECORDS, exec_rec(7, b"/late")]
+        broken, _ = self.run_bundle([("head", 8, None)], records=recs)
+        self.assertTrue(any("record after UNLOAD" in b for b in broken))
+
+    def test_verdicts(self):
+        self.assertEqual(va.verdict([], pinned=True), ("evidence verified", 0))
+        self.assertEqual(va.verdict([], pinned=False), ("unanchored: AK not pinned", 3))
+        self.assertEqual(va.verdict(["x"], pinned=False), ("evidence broken", 1))
+
+    def run_main(self, pin):
+        saved = va.run_checkquote
+        va.run_checkquote = lambda *a: (True, "stub")
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                self.make(d, [("head", 7, None)])
+                argv = [d]
+                if pin:
+                    Path(d, "pinned.pem").write_text("stub\n")
+                    argv += ["--ak", str(Path(d, "pinned.pem"))]
+                with contextlib.redirect_stdout(io.StringIO()) as buf:
+                    status = va.main(argv)
+                return status, buf.getvalue().splitlines()
+        finally:
+            va.run_checkquote = saved
+
+    def test_without_ak_is_unanchored(self):
+        status, lines = self.run_main(pin=False)
+        self.assertEqual((status, lines[-1]), (3, "unanchored: AK not pinned"))
+
+    def test_with_ak_is_verified(self):
+        status, lines = self.run_main(pin=True)
+        self.assertEqual((status, lines[-1]), (0, "evidence verified"))
 
     def test_attest_fields(self):
         a = va.parse_attest(attest(b"\x05" * 32, bytes(32), reset=86))

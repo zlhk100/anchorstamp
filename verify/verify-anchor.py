@@ -10,7 +10,13 @@ It keeps the PCR 13 entries, replays them, checks every quote with
 tpm2_checkquote, finds the replay prefix each quote signs, decodes the ASX1
 records and prints them: EXEC, LOAD, LOST, UNLOAD, gaps in seq, resetCount,
 and the tail no quote covers. Any mismatch prints "evidence broken" and
-exits 1.
+exits 1. A gap in seq, a load whose first record is not LOAD seq 0, a second
+LOAD and a record after UNLOAD are mismatches.
+
+The attestation key must be pinned with --ak: a key taken from the bundle
+proves only that the bundle agrees with itself. Without --ak the checks
+still run, and evidence that is not broken prints "unanchored: AK not
+pinned" and exits 3.
 
 The second form replays one PCR of a raw measurement list against the output
 of `tpm2_pcrread sha256:N` and prints both values.
@@ -22,7 +28,8 @@ is SHA-1 on the kernels this targets and is never used.
 The collector is transport, not a trusted party: nothing it wrote is believed
 unless a quote signed by the attestation key covers it.
 
-Exit status: 0 evidence verified, 1 evidence broken, 2 input or usage error.
+Exit status: 0 evidence verified, 1 evidence broken, 2 input or usage error,
+3 unanchored (AK not pinned).
 """
 
 import argparse
@@ -341,8 +348,9 @@ def read_bytes(path):
         raise InputError(f"{path.name}: {exc.strerror}") from exc
 
 
-def verify_bundle(bundle, ak=None, nonce=None, checkquote=run_checkquote, out=print):
+def verify_bundle(bundle, ak=None, nonce=None, checkquote=None, out=print):
     """Verify one bundle. Returns the list of reasons the evidence is broken."""
+    checkquote = checkquote or run_checkquote
     broken = []
     entries = parse_list(read_bytes(bundle / "ima.bin"))
     anchor = [e for e in entries if e.pcr == PCR_ANCHOR]
@@ -416,6 +424,7 @@ def verify_bundle(bundle, ak=None, nonce=None, checkquote=run_checkquote, out=pr
         out(("       " if anchored is not None and i < anchored else "TAIL   ") + format_record(rec))
     for finding in sequence_findings(records):
         out(finding)
+        broken.append(finding.removeprefix("GAP").strip())
 
     lost = sum(r.body["count"] for _, r in records if r.kind == KIND_LOST)
     execs = sum(1 for _, r in records if r.kind == KIND_EXEC)
@@ -449,6 +458,15 @@ def replay_fixture(list_path, pcrread_path, pcr, out=print):
     return value == read
 
 
+def verdict(broken, pinned):
+    """The closing line and exit status for one bundle."""
+    if broken:
+        return "evidence broken", 1
+    if not pinned:
+        return "unanchored: AK not pinned", 3
+    return "evidence verified", 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("bundle", nargs="?", help="bundle directory written by collect.sh")
@@ -471,8 +489,9 @@ def main(argv):
         return 2
     for reason in broken:
         print(f"BROKEN {reason}")
-    print("evidence broken" if broken else "evidence verified")
-    return 1 if broken else 0
+    line, status = verdict(broken, pinned=bool(args.ak))
+    print(line)
+    return status
 
 
 if __name__ == "__main__":
