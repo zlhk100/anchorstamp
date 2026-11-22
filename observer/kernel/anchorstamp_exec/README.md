@@ -32,6 +32,10 @@ At most 1024 execs wait to be recorded. An exec beyond that, or one whose
 queue item cannot be allocated without the kernel's emergency reserves, is
 not recorded and is counted in the next LOST.
 
+On unload the module measures any pending LOST, then UNLOAD. If that final
+LOST cannot be measured it emits no UNLOAD, so a load whose losses were not
+all reported never appears closed.
+
 ## Build
 
 Against the running kernel's headers, with the compiler that built it:

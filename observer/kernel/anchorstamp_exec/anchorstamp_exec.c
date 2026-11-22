@@ -356,10 +356,14 @@ static void __exit asx_exit(void)
 	tracepoint_synchronize_unregister();
 	drain_workqueue(asx_wq);
 
+	/*
+	 * UNLOAD states that every exec of this load is accounted for. If
+	 * the final LOST was not measured that is not true, so no UNLOAD.
+	 */
 	n = atomic64_xchg(&asx_lost, 0);
 	if (n && asx_emit_lost(n))
-		pr_warn("final LOST of %llu not measured\n", n);
-	if (asx_emit_unload())
+		pr_warn("final LOST of %llu not measured; no UNLOAD\n", n);
+	else if (asx_emit_unload())
 		pr_warn("UNLOAD not measured\n");
 	destroy_workqueue(asx_wq);
 	pr_info("unloaded, load_id %*phN\n", ASX_LOAD_ID_LEN, asx_load_id);
