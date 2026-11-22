@@ -67,6 +67,15 @@ NOBODY=65534
 STATE=/var/lib/anchorstamp
 INSTALL_BASE=/usr/local/lib/anchorstamp-poc
 AUDITD_CONF=/etc/audit/auditd.conf
+# auditd's own messages when it stops writing records, as the installed
+# auditd 3.0.7 prints them (strings of /usr/sbin/auditd)
+AUDITD_SUSPEND_TEXTS=(
+    "Audit daemon is suspending logging due to previously mentioned write error"
+    "Audit daemon is suspending logging due to low disk space."
+    "Audit daemon is suspending logging due to no space left on logging partition."
+    "Audit daemon is suspending logging due to logfile size."
+)
+SYSLOG=/var/log/syslog
 SCENARIOS="honest shadow forger pipeline subagent burst evade longpath tamper escalate"
 FRAMEWORK_SCENARIOS="framework framework-live framework-netcheck"
 VENV=/opt/anchorstamp-venv
@@ -252,6 +261,49 @@ auditd_space() {
     esac
 }
 
+# auditd's own messages since step 1 ($AUDITD_SINCE), from $SUSPEND_SRC,
+# searched for the texts with which it announces that it suspends logging.
+# Prints the matching lines (at most 5, printable ASCII); returns 0 found,
+# 1 none, 2 the search failed.
+auditd_suspend_search() {
+    local msgs size found t
+    local pat=()
+    for t in "${AUDITD_SUSPEND_TEXTS[@]}"; do pat+=(-e "$t"); done
+    case "$SUSPEND_SRC" in
+    journal)
+        msgs=$(journalctl -u auditd -q --since "$AUDITD_SINCE" -o cat) || return 2
+        ;;
+    syslog)
+        if [ -L "$SYSLOG" ] || [ ! -f "$SYSLOG" ]; then return 2; fi
+        size=$(stat -c %s "$SYSLOG") || return 2
+        [ "$size" -ge "$SYSLOG_OFF" ] || return 2
+        msgs=$(tail -c +"$((SYSLOG_OFF + 1))" "$SYSLOG") || return 2
+        ;;
+    *) return 2 ;;
+    esac
+    found=$(printf '%s\n' "$msgs" | grep -a -F "${pat[@]}" | head -n 5 | LC_ALL=C tr -c '\12\40-\176' '?') || true
+    [ -n "$found" ] || return 1
+    printf '%s' "$found"
+}
+
+# The search above, logged as a check; a suspension found or a failed
+# search is a stop. $1 names the point in the run.
+auditd_suspend_check() {
+    local out r
+    out=$(auditd_suspend_search) && r=0 || r=$?
+    case "$r" in
+    0)
+        check "auditd suspension search $1 ($SUSPEND_SRC since $AUDITD_SINCE): FOUND: $(printf '%s' "$out" | tr '\n' ';')"
+        stop "auditd suspended logging during the run; audit evidence incomplete"
+        ;;
+    1) check "auditd suspension search $1 ($SUSPEND_SRC since $AUDITD_SINCE): none" ;;
+    *)
+        check "auditd suspension search $1 ($SUSPEND_SRC since $AUDITD_SINCE): the search failed"
+        stop "the search for an auditd suspension failed ($1)"
+        ;;
+    esac
+}
+
 # ---- arguments ---------------------------------------------------------
 LEAK=0
 if [ "${1:-}" = "--leak-test" ]; then
@@ -275,6 +327,8 @@ if [ "$SCENARIO" = framework-live ]; then LIVE=1; fi
 
 # ---- 1 preflight -------------------------------------------------------
 log "step 1 preflight; scenario=$SCENARIO leak_test=$LEAK"
+# auditd's messages from here on are searched for a suspension
+AUDITD_SINCE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
 # root, invoked through sudo by the operator who owns the build tree
 [ "$(id -u)" -eq 0 ] || die "not root"
@@ -289,6 +343,17 @@ systemctl is-active --quiet auditd || die "auditd not active"
 STATUS_BEFORE=$(auditctl -s)
 printf '%s\n' "$STATUS_BEFORE" | grep -qx 'enabled 1' || die "audit not 'enabled 1'"
 log "preflight audit: ok auditd active, enabled 1"
+# where auditd's own messages are read: the journal, if it holds any of
+# auditd's; else the syslog file from its size now
+SYSLOG_OFF=0
+if [ -n "$(journalctl -u auditd -q -n 1 -o cat 2>/dev/null)" ]; then
+    SUSPEND_SRC=journal
+elif [ ! -L "$SYSLOG" ] && [ -f "$SYSLOG" ] && SYSLOG_OFF=$(stat -c %s "$SYSLOG"); then
+    SUSPEND_SRC=syslog
+else
+    die "no auditd message in the journal and no $SYSLOG: a suspension of auditd's logging could not be detected"
+fi
+log "preflight auditd messages: read from the $SUSPEND_SRC since $AUDITD_SINCE (syslog offset $SYSLOG_OFF)"
 
 # state directory absent, or root:root 0755 and not a symlink
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
@@ -681,6 +746,7 @@ step10() {
     ba=$(printf '%s\n' "$status_after" | awk '$1=="backlog"{print $2}')
     check "audit lost before=$lb after=$la; backlog before=$bb after=$ba"
     if [ "$lb" != "$la" ] || [ "$bb" != "$ba" ]; then stop "audit lost or backlog changed during the run"; fi
+    auditd_suspend_check "at step 10"
 }
 
 trap cleanup EXIT
@@ -874,6 +940,7 @@ if [ "$LIVE" -eq 1 ]; then
     fi
     check "ss -tune samples: $SS_TICKS; measured-account TCP/UDP peers other than $OLLAMA: at least $SS_FOREIGN"
 fi
+auditd_suspend_check "after step 7"
 
 # ---- 8, 9, 10 ----------------------------------------------------------
 step8
