@@ -4,8 +4,9 @@
 #
 #   sudo observer/kernel/fixture.sh <new-output-dir>
 #
-# Writes list.bin and pcrread.txt into the new directory, owned by the
-# invoking user, and nothing else. PCR 10 is read before and after the copy;
+# Writes list.bin and pcrread.txt into the new directory and nothing else.
+# The directory is root-owned, mode 0700, until the script ends; then it is
+# handed to the invoking user. PCR 10 is read before and after the copy;
 # the copy is retried until the two reads agree, so the list and the value
 # belong together. verify/verify-anchor.py --replay-pcr 10 compares them.
 set -euo pipefail
@@ -17,8 +18,8 @@ export TPM2TOOLS_TCTI=device:/dev/tpmrm0
 [ $# -eq 1 ] || { echo "usage: fixture.sh <new-output-dir>" >&2; exit 1; }
 out=$1
 [ ! -e "$out" ] || { echo "REFUSED: $out exists" >&2; exit 1; }
-mkdir -m 0755 "$out"
-chown "${SUDO_UID:-0}:${SUDO_GID:-0}" "$out"
+mkdir -m 0700 "$out"
+trap 'chown -R "${SUDO_UID:-0}:${SUDO_GID:-0}" "$out"' EXIT
 
 echo "fixture.sh $(date -Is) kernel $(uname -r)"
 for try in 1 2 3 4 5; do
@@ -27,7 +28,6 @@ for try in 1 2 3 4 5; do
     b=$(tpm2_pcrread sha256:10)
     if [ "$a" = "$b" ]; then
         printf '%s\n' "$b" >"$out/pcrread.txt"
-        chown "${SUDO_UID:-0}:${SUDO_GID:-0}" "$out/list.bin" "$out/pcrread.txt"
         echo "try $try: PCR 10 unchanged across the copy"
         cat "$out/pcrread.txt"
         echo "list.bin $(stat -c %s "$out/list.bin") bytes, sha256 $(sha256sum "$out/list.bin" | cut -d' ' -f1)"

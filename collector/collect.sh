@@ -11,7 +11,9 @@
 # otherwise the template digest of the newest PCR 13 entry. --every repeats
 # the round until interrupted. A quote is committed to the bundle only after
 # a list copy taken after it, so an interrupted run leaves a bundle whose
-# every quote is covered by its list.
+# every quote is covered by its list. The bundle directory is root-owned,
+# mode 0700, while the run lasts; it is handed to the invoking user only
+# when the run ends.
 #
 # The collector is transport, not a trusted party: verify/verify-anchor.py
 # believes nothing here that a quote does not cover.
@@ -58,7 +60,7 @@ fi
 [ ! -e "$out" ] || { echo "collect.sh: $out exists" >&2; exit 1; }
 
 OWN="${SUDO_UID:-0}:${SUDO_GID:-0}"
-mkdir -m 0755 "$out"
+mkdir -m 0700 "$out"
 exec > >(tee "$out/collect.txt") 2>&1
 
 finish() {
@@ -172,7 +174,6 @@ while :; do
     for x in sig pcrs src; do mv "$r.$x" "$out/quote-$round.$x"; done
     mv "$r.pcr7" "$out/pcr7-$round.bin"
     mv "$r.msg" "$out/quote-$round.msg"
-    chown -R "$OWN" "$out"
     echo "quote $round $(date -Is) ms=$ms extraData=$src:$qual list=$(stat -c %s "$out/ima.bin")B"
     [ -n "$every" ] || break
     sleep "$every"
