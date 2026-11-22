@@ -41,7 +41,7 @@
 #       the audit log's size; at 3/4 of max_log_file the account is killed
 #    8  kill every process of the measured account by uid until none is
 #       left; settle 2 s; then check again for a crontab or at job (a stop
-#       if one appeared)
+#       if one appeared); claims/ frozen: root-owned, no write bit
 #    9  SIGTERM the observer by its pid; wait at most 5 s, then SIGKILL
 #   10  delete the rules by exact text; compare rules and audit counters
 #   11  run the report as the operator
@@ -911,6 +911,23 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     else
         check "claims/claims.bin: absent"
     fi
+fi
+# Every scenario: claims/ frozen once the measured account has no process
+# left, so nothing in it changes from here on. Owner root and no write bit,
+# recursively; -h and chmod's recursion act on no symbolic link's target.
+# Nothing is deleted or rewritten. Directories end 0555, files 0444 from
+# 0644: the report and the root readers below still read them.
+if [ "$AGENTS_REMAIN" -eq 0 ]; then
+    if chown -R -h root:root "$RUN/claims" && chmod -R a-w "$RUN/claims"; then
+        check "claims/ frozen: $(find -P "$RUN/claims" -printf 'claims/%P %u:%g %m %y;' | LC_ALL=C tr -cd '\40-\176')"
+    else
+        check "claims/ not frozen: chown or chmod failed"
+        stop "claims/ could not be frozen"
+    fi
+else
+    check "claims/ not frozen: measured-account processes remain"
+fi
+if [ "$FRAMEWORK" -eq 1 ]; then
     # framework-netcheck passes only if the control in step 1 succeeded and
     # the agent's own log shows the same curl, through run_command and
     # claimed by the bridge, failing to connect: exit 7 (could not connect)
@@ -966,7 +983,7 @@ if [ "$AGENTS_REMAIN" -ne 0 ]; then
 fi
 
 # ---- leak search (test build only) -------------------------------------
-# Only files root wrote: claims/ belongs to the measured account and is
+# Only files root wrote: claims/ was written by the measured account and is
 # not read. Regular files only, never through a symlink, at most
 # LEAK_MAX bytes each; a file over the cap leaves the search incomplete,
 # which is a stop.
