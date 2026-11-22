@@ -307,7 +307,7 @@ static int __init asx_init(void)
 	u8 buf[ASX_LOAD_LEN];
 	int ret;
 
-	asx_wq = alloc_ordered_workqueue("anchorstamp_exec", 0);
+	asx_wq = alloc_ordered_workqueue("anchorstamp_exec", WQ_FREEZABLE);
 	if (!asx_wq)
 		return -ENOMEM;
 
