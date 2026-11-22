@@ -28,6 +28,10 @@ could not be resolved (path_len 0, digest zero). seq advances only when
 IMA measured the record, so a gap-free seq and the LOST counts account for
 every exec seen after LOAD.
 
+At most 1024 execs wait to be recorded. An exec beyond that, or one whose
+queue item cannot be allocated without the kernel's emergency reserves, is
+not recorded and is counted in the next LOST.
+
 ## Build
 
 Against the running kernel's headers, with the compiler that built it:

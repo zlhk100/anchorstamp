@@ -5,4 +5,5 @@ asx_tp observer/kernel/anchorstamp_exec/anchorstamp_exec.c the sched_process_exe
 asx_wq observer/kernel/anchorstamp_exec/anchorstamp_exec.c the ordered workqueue, created first in init and destroyed last in exit; the probe has no context to reach it otherwise
 asx_seq observer/kernel/anchorstamp_exec/anchorstamp_exec.c the per-load record sequence, written only by init, the ordered worker and exit, which never run concurrently
 asx_lost observer/kernel/anchorstamp_exec/anchorstamp_exec.c atomic count of execs not recorded, incremented by the probe on any CPU and exchanged to zero by the worker
+asx_pending observer/kernel/anchorstamp_exec/anchorstamp_exec.c atomic count of queued items, incremented by the probe on any CPU and decremented by the worker when it frees one; caps the queue so a burst of execs is counted as lost instead of exhausting memory
 asx_load_id observer/kernel/anchorstamp_exec/anchorstamp_exec.c the random per-load identifier, written once in init before the probe is registered, read by every record

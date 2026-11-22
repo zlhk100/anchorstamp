@@ -25,7 +25,8 @@
  *   UNLOAD (29): header only
  *
  * Context: the probe runs on the exec path with preemption disabled, so it
- * only copies fields, takes a file reference and queues an item. An
+ * only copies fields, takes a file reference and queues an item; at most
+ * 1024 items wait, and an exec beyond that is counted as lost. An
  * ordered workqueue builds and measures the records one at a time, which
  * is what makes seq contiguous without a lock.
  */
@@ -68,6 +69,7 @@
 #define ASX_LOAD_ID_LEN		16
 #define ASX_DIGEST_LEN		20
 #define ASX_PATH_CAP		1024
+#define ASX_PENDING_CAP		1024
 
 /* Header offsets. */
 #define ASX_OFF_MAGIC		0
@@ -121,6 +123,8 @@ static struct workqueue_struct *asx_wq;
 static u64 asx_seq;
 /* Execs not recorded since the last record: probe and worker. */
 static atomic64_t asx_lost = ATOMIC64_INIT(0);
+/* Items queued and not yet freed: the probe adds, the worker removes. */
+static atomic_t asx_pending = ATOMIC_INIT(0);
 /* Written once in init, before the probe is registered. */
 static u8 asx_load_id[ASX_LOAD_ID_LEN];
 
@@ -257,13 +261,15 @@ out:
 	kfree(pathbuf);
 	kfree(rec);
 	kfree(item);
+	atomic_dec(&asx_pending);
 }
 
 /*
  * sched_process_exec probe: preemption is disabled here. Copy what the
  * record needs, take a reference on the executable and queue the item.
- * Never sleeps and never fails the exec; an item that cannot be allocated
- * is counted as lost.
+ * Never sleeps and never fails the exec. At most ASX_PENDING_CAP items wait
+ * in the queue; an exec beyond that, or one whose item cannot be allocated
+ * without the emergency reserves, is counted as lost.
  */
 static void asx_probe(void *data, struct task_struct *p, pid_t old_pid,
 		      struct linux_binprm *bprm)
@@ -271,8 +277,14 @@ static void asx_probe(void *data, struct task_struct *p, pid_t old_pid,
 	const struct cred *cred;
 	struct asx_item *item;
 
-	item = kmalloc(sizeof(*item), GFP_ATOMIC);
+	if (atomic_inc_return(&asx_pending) > ASX_PENDING_CAP) {
+		atomic_dec(&asx_pending);
+		atomic64_inc(&asx_lost);
+		return;
+	}
+	item = kmalloc(sizeof(*item), GFP_NOWAIT | __GFP_NOWARN);
 	if (!item) {
+		atomic_dec(&asx_pending);
 		atomic64_inc(&asx_lost);
 		return;
 	}
