@@ -63,7 +63,17 @@ OWN="${SUDO_UID:-0}:${SUDO_GID:-0}"
 mkdir -m 0700 "$out"
 exec > >(tee "$out/collect.txt") 2>&1
 
+# The policy session is flushed where it is used and, should a step fail
+# in between, here: no exit path leaves it loaded in the TPM.
+flush_session() {
+    if [ -f "$K/session.ctx" ]; then
+        tpm2_flushcontext "$K/session.ctx" || echo "policy session flush failed"
+        rm -f "$K/session.ctx"
+    fi
+}
+
 finish() {
+    flush_session
     if [ -f "$out/.round.handles-before" ]; then
         tpm2_getcap handles-persistent >"$out/.round.handles-after" 2>&1 || true
         if cmp -s "$out/.round.handles-before" "$out/.round.handles-after"; then
@@ -73,7 +83,7 @@ finish() {
             diff "$out/.round.handles-before" "$out/.round.handles-after" || true
         fi
     fi
-    rm -f "$K/session.ctx" "$K/secret.data" "$K/actcred.out" "$K/mkcred.out" \
+    rm -f "$K/secret.data" "$K/actcred.out" "$K/mkcred.out" \
         "$out"/.round.* 2>/dev/null || true
     chown -R "$OWN" "$out"
     echo "collect end $(date -Is): $out"
@@ -104,7 +114,7 @@ if [ ! -f "$K/ak.priv" ]; then
     must tpm2_policysecret -S "$K/session.ctx" -c e >/dev/null
     must tpm2_activatecredential -c "$K/ak.ctx" -C "$K/ek.ctx" -i "$K/mkcred.out" \
         -o "$K/actcred.out" -P "session:$K/session.ctx"
-    tpm2_flushcontext "$K/session.ctx"
+    flush_session
     if cmp -s "$K/secret.data" "$K/actcred.out"; then
         echo "ACTIVATION OK"
     else
@@ -120,7 +130,7 @@ must tpm2_startauthsession --policy-session -S "$K/session.ctx"
 must tpm2_policysecret -S "$K/session.ctx" -c e >/dev/null
 must tpm2_load -C "$K/ek.ctx" -u "$K/ak.pub" -r "$K/ak.priv" -c "$K/ak.ctx" \
     -n "$out/.round.ak.name" -P "session:$K/session.ctx"
-tpm2_flushcontext "$K/session.ctx"
+flush_session
 cmp -s "$K/ak.name" "$out/.round.ak.name" || { echo "STOP: loaded AK name differs from $K/ak.name"; exit 2; }
 cp "$K/ak.pem" "$out/ak.pem"
 cp "$K/ak.name" "$out/ak.name"
