@@ -281,6 +281,8 @@ auditd_suspend_search() {
         ;;
     syslog)
         if [ -L "$SYSLOG" ] || [ ! -f "$SYSLOG" ]; then return 2; fi
+        # rotated or replaced since step 1: the offset means nothing
+        [ "$(stat -c %d:%i "$SYSLOG" 2>/dev/null)" = "$SYSLOG_ID" ] || return 2
         size=$(stat -c %s "$SYSLOG") || return 2
         [ "$size" -ge "$SYSLOG_OFF" ] || return 2
         msgs=$(tail -c +"$((SYSLOG_OFF + 1))" "$SYSLOG") || return 2
@@ -383,16 +385,19 @@ STATUS_BEFORE=$(auditctl -s)
 printf '%s\n' "$STATUS_BEFORE" | grep -qx 'enabled 1' || die "audit not 'enabled 1'"
 log "preflight audit: ok auditd active, enabled 1"
 # where auditd's own messages are read: the journal, if it holds any of
-# auditd's; else the syslog file from its size now
+# auditd's; else the syslog file from its size now, the same file
+# (device and inode) at search time
 SYSLOG_OFF=0
+SYSLOG_ID=""
 if [ -n "$(journalctl -u auditd -q -n 1 -o cat 2>/dev/null)" ]; then
     SUSPEND_SRC=journal
-elif [ ! -L "$SYSLOG" ] && [ -f "$SYSLOG" ] && SYSLOG_OFF=$(stat -c %s "$SYSLOG"); then
+elif [ ! -L "$SYSLOG" ] && [ -f "$SYSLOG" ] && SYSLOG_ID=$(stat -c %d:%i "$SYSLOG") &&
+    SYSLOG_OFF=$(stat -c %s "$SYSLOG"); then
     SUSPEND_SRC=syslog
 else
     die "no auditd message in the journal and no $SYSLOG: a suspension of auditd's logging could not be detected"
 fi
-log "preflight auditd messages: read from the $SUSPEND_SRC since $AUDITD_SINCE (syslog offset $SYSLOG_OFF)"
+log "preflight auditd messages: read from the $SUSPEND_SRC since $AUDITD_SINCE (syslog ${SYSLOG_ID:-n/a} offset $SYSLOG_OFF)"
 
 # state directory absent, or root:root 0755 and not a symlink
 if [ -e "$STATE" ] || [ -L "$STATE" ]; then
