@@ -6,6 +6,11 @@
 
 [advisories]
 # The default advisory database (RustSec); no advisory is ignored.
+# Unmaintained and unsound crates count anywhere in the graph; a yanked
+# version is an error.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
 ignore = []
 
 [licenses]
