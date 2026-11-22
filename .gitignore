@@ -16,3 +16,12 @@ target/
 *~
 .idea/
 .vscode/
+
+# Kernel module build output (kbuild)
+observer/kernel/anchorstamp_exec/*.o
+observer/kernel/anchorstamp_exec/*.ko
+observer/kernel/anchorstamp_exec/*.mod
+observer/kernel/anchorstamp_exec/*.mod.c
+observer/kernel/anchorstamp_exec/*.cmd
+observer/kernel/anchorstamp_exec/Module.symvers
+observer/kernel/anchorstamp_exec/modules.order
