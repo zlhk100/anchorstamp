@@ -30,7 +30,8 @@
 #    1  preflight checks; record `auditctl -s` and `auditctl -l`; the
 #       measured account has no crontab and no at job; framework-netcheck:
 #       the plan's curl run as the measured account outside any scope, the
-#       control the block inside the scope is shown against
+#       control the block inside the scope is shown against (run again
+#       after step 10)
 #    2  install the binaries and scenarios into a new root-owned directory,
 #       each copied from a regular file through a descriptor; record SHA-256
 #    3  create the run directory (never reused) with sink/ and claims/
@@ -309,6 +310,25 @@ auditd_suspend_check() {
     esac
 }
 
+# The netcheck control: the plan's curl as the measured account, outside
+# any scope, stdin /dev/null. Sets CTRL_RC, CTRL_CODE (the HTTP code,
+# digits only) and CTRL_ERR (the last 512 bytes of its stderr, one line,
+# printable ASCII). The stderr is captured through descriptor 3; the exit
+# status and HTTP code follow it on the last line.
+netcheck_control() {
+    local all last
+    all=$({
+        out=$(sudo -n -u "$AGENT" -- env -i PATH=/usr/bin:/bin /usr/bin/curl -sS \
+            -o /dev/null -w '%{http_code}' --max-time 3 http://1.1.1.1/ </dev/null 2>&3) && r=0 || r=$?
+        printf '\n%s %s' "$r" "$out"
+    } 3>&1)
+    last=${all##*$'\n'}
+    CTRL_RC=${last%% *}
+    case "$CTRL_RC" in '' | *[!0-9]*) CTRL_RC=255 ;; esac
+    CTRL_CODE=$(printf '%s' "${last#* }" | LC_ALL=C tr -cd '0-9' | head -c 3)
+    CTRL_ERR=$(printf '%s' "${all%$'\n'*}" | tail -c 512 | tr '\n' ' ' | LC_ALL=C tr -cd '\40-\176')
+}
+
 # ---- arguments ---------------------------------------------------------
 LEAK=0
 if [ "${1:-}" = "--leak-test" ]; then
@@ -409,10 +429,9 @@ if [ "$SCENARIO" = framework-netcheck ]; then
     else
         log "preflight netcheck curl config: ok home ${AGENT_HOME:-unset} of $AGENT is not a directory"
     fi
-    CTRL_CODE=$(sudo -n -u "$AGENT" -- env -i PATH=/usr/bin:/bin /usr/bin/curl -sS \
-        -o /dev/null -w '%{http_code}' --max-time 3 http://1.1.1.1/) && CTRL_RC=0 || CTRL_RC=$?
-    CTRL_CODE=$(printf '%s' "$CTRL_CODE" | LC_ALL=C tr -cd '0-9' | head -c 3)
-    log "preflight netcheck control: curl http://1.1.1.1/ as $AGENT outside any scope: rc=$CTRL_RC http_code=${CTRL_CODE:-none}"
+    netcheck_control
+    CTRL1="rc=$CTRL_RC http_code=${CTRL_CODE:-none} stderr_tail=\"$CTRL_ERR\""
+    log "preflight netcheck control 1: curl http://1.1.1.1/ as $AGENT outside any scope: $CTRL1"
     if [ "$CTRL_RC" -eq 0 ]; then
         NETCHECK_CTRL=1
     else
@@ -1040,12 +1059,13 @@ else
     check "claims/ not frozen: measured-account processes remain"
 fi
 if [ "$FRAMEWORK" -eq 1 ]; then
-    # framework-netcheck passes only if the control in step 1 succeeded and
-    # the agent's own log shows the same curl, through run_command and
-    # claimed by the bridge, failing to connect: exit 7 (could not connect)
-    # or 28 (timed out). On this kernel the scope's block is a silent drop,
-    # so no error text proves a denial; the control is what shows the
-    # failure is the scope's. Anything else is a stop, with the entry shown.
+    # framework-netcheck: the agent's own log must show the same curl,
+    # through run_command and claimed by the bridge, failing to connect:
+    # exit 7 (could not connect) or 28 (timed out). On this kernel the
+    # scope's block is a silent drop, so no error text proves a denial; the
+    # controls before and after the run are what show the failure is the
+    # scope's. Read here, decided after step 10.
+    NC_INSIDE=0
     if [ "$SCENARIO" = framework-netcheck ]; then
         NC=""
         if open_single "$RUN/claims/agent-log.jsonl"; then
@@ -1067,12 +1087,8 @@ if [ "$FRAMEWORK" -eq 1 ]; then
         if [ -n "$NC" ]; then
             check "netcheck: curl through run_command exit=${NC_EXIT:-none} claimed_by_bridge=$NC_CLAIMED stderr_tail=\"$NC_TAIL\""
         fi
-        if [ "$NETCHECK_CTRL" -eq 1 ] && [ "$NC_CLAIMED" -eq 1 ] &&
-            { [ "$NC_EXIT" = 7 ] || [ "$NC_EXIT" = 28 ]; }; then
-            check "netcheck: PASS control reached 1.1.1.1 outside the scope; inside it curl through run_command, claimed by the bridge, failed to connect (exit $NC_EXIT)"
-        else
-            check "netcheck: curl not shown blocked against the control (control ok=$NETCHECK_CTRL); entry: ${NC:-none}"
-            stop "framework-netcheck: curl was not shown blocked by the scope against a successful control"
+        if [ "$NC_CLAIMED" -eq 1 ] && { [ "$NC_EXIT" = 7 ] || [ "$NC_EXIT" = 28 ]; }; then
+            NC_INSIDE=1
         fi
     fi
 fi
@@ -1092,6 +1108,27 @@ step10
 if [ "$AGENTS_REMAIN" -ne 0 ]; then
     log "STOP: measured-account processes survived the kill rounds; leak search and report skipped"
     exit 1
+fi
+
+# framework-netcheck: the second control, the same curl outside any scope
+# now the run is over; the test passes only if both controls reached
+# 1.1.1.1 and the curl inside the scope failed to connect.
+if [ "$SCENARIO" = framework-netcheck ]; then
+    netcheck_control
+    CTRL2="rc=$CTRL_RC http_code=${CTRL_CODE:-none} stderr_tail=\"$CTRL_ERR\""
+    check "netcheck control 1 (step 1): $CTRL1"
+    check "netcheck control 2 (after step 10): $CTRL2"
+    LEFT=$( (pgrep -U "$AGENT_UID"; pgrep -u "$AGENT_UID") | sort -u | tr '\n' ' ') || true
+    if [ -n "$LEFT" ]; then
+        kill_agents || true
+        stop "processes of $AGENT remain after the second netcheck control: $LEFT"
+    fi
+    if [ "$NETCHECK_CTRL" -eq 1 ] && [ "$CTRL_RC" -eq 0 ] && [ "$NC_INSIDE" -eq 1 ]; then
+        check "netcheck: PASS both controls reached 1.1.1.1 outside the scope (1: $CTRL1; 2: $CTRL2); inside it curl through run_command, claimed by the bridge, failed to connect (exit $NC_EXIT)"
+    else
+        check "netcheck: curl not shown blocked between two successful controls (control 1 ok=$NETCHECK_CTRL, control 2 rc=$CTRL_RC, inside ok=$NC_INSIDE); entry: ${NC:-none}"
+        stop "framework-netcheck: curl was not shown blocked by the scope between two successful controls"
+    fi
 fi
 
 # ---- leak search (test build only) -------------------------------------
