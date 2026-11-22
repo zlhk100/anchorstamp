@@ -398,6 +398,17 @@ log "preflight account processes: ok none"
 # here, a failure inside the scope shows nothing about the scope.
 NETCHECK_CTRL=0
 if [ "$SCENARIO" = framework-netcheck ]; then
+    # curl reads a config file from its user's home even with HOME unset;
+    # one there could change what either curl does
+    AGENT_HOME=$(getent passwd "$AGENT" | cut -d: -f6)
+    if [ -n "$AGENT_HOME" ] && [ -d "$AGENT_HOME" ]; then
+        for f in "$AGENT_HOME/.curlrc" "$AGENT_HOME/.config/curlrc"; do
+            if [ -e "$f" ] || [ -L "$f" ]; then die "$f exists: a curl config of $AGENT could change the netcheck"; fi
+        done
+        log "preflight netcheck curl config: ok no .curlrc or .config/curlrc in $AGENT_HOME"
+    else
+        log "preflight netcheck curl config: ok home ${AGENT_HOME:-unset} of $AGENT is not a directory"
+    fi
     CTRL_CODE=$(sudo -n -u "$AGENT" -- env -i PATH=/usr/bin:/bin /usr/bin/curl -sS \
         -o /dev/null -w '%{http_code}' --max-time 3 http://1.1.1.1/) && CTRL_RC=0 || CTRL_RC=$?
     CTRL_CODE=$(printf '%s' "$CTRL_CODE" | LC_ALL=C tr -cd '0-9' | head -c 3)
