@@ -218,6 +218,20 @@ open_single() {
     return 1
 }
 
+# The entries under $RUN/claims that match the find tests given (none:
+# every entry), as "<count> entries: <listing>". Each entry is listed with
+# owner, mode, type and link count; the listing is cut to 64 KiB and every
+# byte outside printable ASCII shown as '?'. The names are the measured
+# account's. Returns 1, printing nothing, when find fails.
+claims_list() {
+    local n list
+    n=$(find -P "$RUN/claims" "$@" -printf . | wc -c; exit "${PIPESTATUS[0]}") || return 1
+    list=$(find -P "$RUN/claims" "$@" -printf 'claims/%P %u:%g %m %y links=%n;' 2>/dev/null |
+        head -c 65537 | LC_ALL=C tr -c '\40-\176' '?')
+    if [ "${#list}" -gt 65536 ]; then list="${list:0:65536} [listing cut at 65536 bytes]"; fi
+    printf '%s entries: %s' "$n" "$list"
+}
+
 # The value of key $1 in auditd.conf, surrounding blanks removed; empty
 # when the key is absent.
 auditd_value() {
@@ -917,8 +931,17 @@ fi
 # recursively; -h and chmod's recursion act on no symbolic link's target.
 # Nothing is deleted or rewritten. Directories end 0555, files 0444 from
 # 0644: the report and the root readers below still read them.
+# Not frozen if any entry other than a directory has more than one link:
+# chown and chmod act on the inode, so a hard link to a file outside
+# claims/ would hand that file to root and take its write bits.
 if [ "$AGENTS_REMAIN" -eq 0 ]; then
-    if chown -R -h root:root "$RUN/claims" && chmod -R a-w "$RUN/claims"; then
+    if ! ML=$(claims_list ! -type d -links +1); then
+        check "claims/ not frozen: the search for entries with more than one link failed"
+        stop "claims/ could not be searched for hard links; not frozen"
+    elif [ "${ML%% *}" != 0 ]; then
+        check "claims/ not frozen: entries with more than one link: $ML"
+        stop "claims/ holds entries with more than one link; not frozen"
+    elif chown -R -h root:root "$RUN/claims" && chmod -R a-w "$RUN/claims"; then
         check "claims/ frozen: $(find -P "$RUN/claims" -printf 'claims/%P %u:%g %m %y;' | LC_ALL=C tr -cd '\40-\176')"
     else
         check "claims/ not frozen: chown or chmod failed"
