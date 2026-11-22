@@ -218,6 +218,26 @@ open_single() {
     return 1
 }
 
+# The value of key $1 in auditd.conf, surrounding blanks removed; empty
+# when the key is absent.
+auditd_value() {
+    sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$AUDITD_CONF" | head -n1 | sed 's/[[:space:]]*$//'
+}
+
+# A free-space threshold of auditd.conf, key $1, in bytes: the value is in
+# megabytes, or, ending in %, a percentage of the size ($2 bytes) of the
+# filesystem holding the log. Prints nothing and returns 1 when the key is
+# absent or its value is neither form: never a default.
+auditd_space() {
+    local v
+    v=$(auditd_value "$1")
+    case "$v" in
+    '' | *[!0-9%]* | %* | *%?* | ?????????????*) return 1 ;;
+    *%) printf '%s\n' $((10#${v%\%} * $2 / 100)) ;;
+    *) printf '%s\n' $((10#$v * 1024 * 1024)) ;;
+    esac
+}
+
 # ---- arguments ---------------------------------------------------------
 LEAK=0
 if [ "${1:-}" = "--leak-test" ]; then
@@ -389,13 +409,29 @@ log "preflight log size: ok $LOG_FILE size=$SIZE limit=$LIMIT; the run is stoppe
 NAME_FORMAT=$(sed -n 's/^name_format *= *//p' "$AUDITD_CONF" | head -n1 | tr '[:lower:]' '[:upper:]')
 [ "$NAME_FORMAT" = "NONE" ] || die "auditd.conf name_format is '${NAME_FORMAT:-unset}', not NONE: every record would gain a node= field"
 log "preflight name_format: ok NONE"
-# framework: room for the audit log to grow to twice max_log_file
+# framework: a margin above auditd's own free-space thresholds. auditd
+# acts at space_left and admin_space_left (the actions are logged); the harness
+# kills the measured account first, at STOP_FREE = the larger of the two
+# plus 4 GiB available, and starts only with room for the audit log to
+# grow to twice max_log_file above that.
 if [ "$FRAMEWORK" -eq 1 ]; then
+    FS_SIZE=$(df -B1 --output=size "$LOG_FILE" | tail -n1 | tr -d ' ')
+    case "$FS_SIZE" in '' | *[!0-9]*) die "cannot read the size of the filesystem under $LOG_FILE" ;; esac
+    SL_RAW=$(auditd_value space_left | LC_ALL=C tr -cd '\40-\176')
+    ASL_RAW=$(auditd_value admin_space_left | LC_ALL=C tr -cd '\40-\176')
+    SL=$(auditd_space space_left "$FS_SIZE") || die "auditd.conf space_left '$SL_RAW' is not megabytes or a percentage"
+    ASL=$(auditd_space admin_space_left "$FS_SIZE") || die "auditd.conf admin_space_left '$ASL_RAW' is not megabytes or a percentage"
+    for a in space_left_action admin_space_left_action disk_full_action disk_error_action; do
+        v=$(auditd_value "$a" | LC_ALL=C tr -cd '\40-\176')
+        log "preflight auditd $a=${v:-unset}"
+    done
+    STOP_FREE=$(((SL > ASL ? SL : ASL) + 4 * 1024 * 1024 * 1024))
+    log "preflight auditd space_left=$SL_RAW ($SL bytes) admin_space_left=$ASL_RAW ($ASL bytes) on a filesystem of $FS_SIZE bytes; STOP_FREE=$STOP_FREE bytes (the larger plus 4 GiB)"
     FREE=$(df -B1 --output=avail "$LOG_FILE" | tail -n1 | tr -d ' ')
     case "$FREE" in '' | *[!0-9]*) die "cannot read free space under $LOG_FILE" ;; esac
-    NEED=$((2 * MAX_MB * 1024 * 1024))
-    [ "$FREE" -ge "$NEED" ] || die "free space under $LOG_FILE is $FREE bytes, below 2 x max_log_file ($NEED)"
-    log "preflight free space: ok $FREE bytes under $LOG_FILE, at least $NEED"
+    NEED=$((STOP_FREE + 2 * MAX_MB * 1024 * 1024))
+    [ "$FREE" -ge "$NEED" ] || die "free space under $LOG_FILE is $FREE bytes, below STOP_FREE + 2 x max_log_file ($NEED)"
+    log "preflight free space: ok $FREE bytes under $LOG_FILE, at least $NEED (STOP_FREE + 2 x max_log_file)"
 fi
 
 # ---- 2 install ---------------------------------------------------------
@@ -468,6 +504,9 @@ printf '%s\n' "$RULES_BEFORE" >"$RUN/audit-rules-before.txt"
 log "step 3 run directory $RUN"
 check "scheduled jobs before the run: $SCHED_BEFORE"
 check "scheduling barred for the measured account: $BARRED"
+if [ "$FRAMEWORK" -eq 1 ]; then
+    check "auditd suspends at admin_space_left=$ASL_RAW ($ASL bytes available); the harness kills the measured account at $STOP_FREE bytes available"
+fi
 log "  core_pattern=$(cat /proc/sys/kernel/core_pattern) suid_dumpable=$(cat /proc/sys/fs/suid_dumpable) ptrace_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
 
 # ---- 4 audit rules -----------------------------------------------------
@@ -773,12 +812,13 @@ while kill -0 "$AGENT_PID" 2>/dev/null && [ "$(awk '/^State:/{print $2}' "/proc/
             esac
         done
     fi
-    # framework: free space under the audit log at least one max_log_file
+    # framework: free space under the audit log at least STOP_FREE, above
+    # the point where auditd itself acts
     if [ "$FRAMEWORK" -eq 1 ]; then
         FREE_NOW=$(df -B1 --output=avail "$LOG_FILE" 2>/dev/null | tail -n1 | tr -d ' ')
         case "$FREE_NOW" in '' | *[!0-9]*) FREE_NOW=0 ;; esac
-        if [ "$FREE_NOW" -lt $((MAX_MB * 1024 * 1024)) ]; then
-            stop "free space under $LOG_FILE fell to $FREE_NOW bytes, below max_log_file; measured account killed"
+        if [ "$FREE_NOW" -lt "$STOP_FREE" ]; then
+            stop "free space under $LOG_FILE fell to $FREE_NOW bytes, below STOP_FREE ($STOP_FREE); measured account killed"
             kill_agents || true
             break
         fi
