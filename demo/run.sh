@@ -247,16 +247,21 @@ auditd_value() {
     sed -n "s/^$1[[:space:]]*=[[:space:]]*//p" "$AUDITD_CONF" | head -n1 | sed 's/[[:space:]]*$//'
 }
 
+# How many lines of auditd.conf set key $1.
+auditd_count() {
+    grep -c "^$1[[:space:]]*=" "$AUDITD_CONF" || true
+}
+
 # A free-space threshold of auditd.conf, key $1, in bytes: the value is in
-# megabytes, or, ending in %, a percentage of the size ($2 bytes) of the
-# filesystem holding the log. Prints nothing and returns 1 when the key is
-# absent or its value is neither form: never a default.
+# megabytes, or, ending in %, a percentage from 1 to 99 of the size ($2
+# bytes) of the filesystem holding the log. Prints nothing and returns 1
+# when the key is absent or its value is neither form: never a default.
 auditd_space() {
     local v
     v=$(auditd_value "$1")
     case "$v" in
-    '' | *[!0-9%]* | %* | *%?* | ?????????????*) return 1 ;;
-    *%) printf '%s\n' $((10#${v%\%} * $2 / 100)) ;;
+    [1-9]% | [1-9][0-9]%) printf '%s\n' $((${v%\%} * $2 / 100)) ;;
+    '' | *[!0-9]* | ?????????????*) return 1 ;;
     *) printf '%s\n' $((10#$v * 1024 * 1024)) ;;
     esac
 }
@@ -496,10 +501,15 @@ log "preflight name_format: ok NONE"
 if [ "$FRAMEWORK" -eq 1 ]; then
     FS_SIZE=$(df -B1 --output=size "$LOG_FILE" | tail -n1 | tr -d ' ')
     case "$FS_SIZE" in '' | *[!0-9]*) die "cannot read the size of the filesystem under $LOG_FILE" ;; esac
+    for k in space_left admin_space_left; do
+        n=$(auditd_count "$k")
+        case "$n" in '' | *[!0-9]*) die "cannot count $k in $AUDITD_CONF" ;; esac
+        [ "$n" -le 1 ] || die "auditd.conf sets $k $n times: which one auditd uses is not checked here"
+    done
     SL_RAW=$(auditd_value space_left | LC_ALL=C tr -cd '\40-\176')
     ASL_RAW=$(auditd_value admin_space_left | LC_ALL=C tr -cd '\40-\176')
-    SL=$(auditd_space space_left "$FS_SIZE") || die "auditd.conf space_left '$SL_RAW' is not megabytes or a percentage"
-    ASL=$(auditd_space admin_space_left "$FS_SIZE") || die "auditd.conf admin_space_left '$ASL_RAW' is not megabytes or a percentage"
+    SL=$(auditd_space space_left "$FS_SIZE") || die "auditd.conf space_left '$SL_RAW' is not megabytes or a percentage from 1 to 99"
+    ASL=$(auditd_space admin_space_left "$FS_SIZE") || die "auditd.conf admin_space_left '$ASL_RAW' is not megabytes or a percentage from 1 to 99"
     for a in space_left_action admin_space_left_action disk_full_action disk_error_action; do
         v=$(auditd_value "$a" | LC_ALL=C tr -cd '\40-\176')
         log "preflight auditd $a=${v:-unset}"
