@@ -1050,7 +1050,12 @@ if [ "$AGENTS_REMAIN" -eq 0 ]; then
         check "claims/ not frozen: entries with more than one link: $ML"
         stop "claims/ holds entries with more than one link; not frozen"
     elif chown -R -h root:root "$RUN/claims" && chmod -R a-w "$RUN/claims"; then
-        check "claims/ frozen: $(find -P "$RUN/claims" -printf 'claims/%P %u:%g %m %y;' | LC_ALL=C tr -cd '\40-\176')"
+        if FL=$(claims_list); then
+            check "claims/ frozen: $FL"
+        else
+            check "claims/ frozen; listing it failed"
+            stop "claims/ was frozen but could not be listed"
+        fi
     else
         check "claims/ not frozen: chown or chmod failed"
         stop "claims/ could not be frozen"
