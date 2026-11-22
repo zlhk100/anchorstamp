@@ -72,21 +72,28 @@ flush_session() {
     fi
 }
 
+say() {
+    printf '%s\n' "$*" >>"$out/finish.txt"
+    printf '%s\n' "$*" || true
+}
+
 finish() {
+    set +e
+    trap '' PIPE INT TERM
     flush_session
     if [ -f "$out/.round.handles-before" ]; then
         tpm2_getcap handles-persistent >"$out/.round.handles-after" 2>&1 || true
         if cmp -s "$out/.round.handles-before" "$out/.round.handles-after"; then
-            echo "persistent handles unchanged"
+            say "persistent handles unchanged"
         else
-            echo "PERSISTENT HANDLES CHANGED"
+            say "PERSISTENT HANDLES CHANGED"
             diff "$out/.round.handles-before" "$out/.round.handles-after" || true
         fi
     fi
     rm -f "$K/secret.data" "$K/actcred.out" "$K/mkcred.out" \
         "$out"/.round.* 2>/dev/null || true
+    say "collect end $(date -Is): $out"
     chown -R "$OWN" "$out"
-    echo "collect end $(date -Is): $out"
 }
 trap finish EXIT
 trap 'exit 130' INT TERM
