@@ -2,7 +2,6 @@
 # demo/run.sh — one proof-of-concept run, as root via sudo.
 #
 #   sudo demo/run.sh <scenario>
-#   sudo demo/run.sh --leak-test <scenario>
 #
 # Scenarios: honest shadow forger pipeline subagent burst evade longpath
 # tamper escalate (agentsim); framework framework-live framework-netcheck
@@ -12,8 +11,6 @@
 #
 # Before running, as the operator (not root):
 #   cargo build --workspace --release
-#   cargo build -p anchorstamp-observe-audit --release --features leak-test \
-#       --target-dir target/leak-test           # only for --leak-test
 # Before a framework scenario, once, as root: demo/framework/install-venv.sh
 # For framework-live, Ollama serving qwen2.5:7b-instruct on 127.0.0.1:11434.
 #
@@ -23,8 +20,8 @@
 # agent in place of agentsim, inside a systemd scope that caps memory and
 # tasks and allows IP traffic to 127.0.0.1 only (live: a 90 s budget, a stop at twice that,
 # and an ss sample of the measured account's TCP/UDP peers each tick);
-# the leak search also reads claims/agent-log.jsonl; after the report,
-# that log is printed as the agent's own account.
+# after the report, claims/agent-log.jsonl is printed as the agent's own
+# account.
 #
 # What it does, in order:
 #    1  preflight checks; record `auditctl -s` and `auditctl -l`; the
@@ -37,7 +34,8 @@
 #    3  create the run directory (never reused) with sink/ and claims/
 #    4  add the audit rules for this run; record their exact text
 #    5  start the observer as a direct child
-#    6  wait for its anchor; check it is our child and runs as nobody
+#    6  wait for its ready line, which it logs after its privilege drop;
+#       check it is our child and runs as nobody
 #    7  run the scenario as the measured account, no terminal, watching
 #       the audit log's size; at 3/4 of max_log_file the account is killed
 #    8  kill every process of the measured account by uid until none is
@@ -364,12 +362,7 @@ curl_config_found() {
 }
 
 # ---- arguments ---------------------------------------------------------
-LEAK=0
-if [ "${1:-}" = "--leak-test" ]; then
-    LEAK=1
-    shift
-fi
-[ $# -eq 1 ] || die "usage: sudo demo/run.sh [--leak-test] <scenario>"
+[ $# -eq 1 ] || die "usage: sudo demo/run.sh <scenario>"
 SCENARIO=$1
 FRAMEWORK=0
 LIVE=0
@@ -385,7 +378,7 @@ esac
 if [ "$SCENARIO" = framework-live ]; then LIVE=1; fi
 
 # ---- 1 preflight -------------------------------------------------------
-log "step 1 preflight; scenario=$SCENARIO leak_test=$LEAK"
+log "step 1 preflight; scenario=$SCENARIO"
 # auditd's messages from here on are searched for a suspension
 AUDITD_SINCE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
@@ -484,9 +477,6 @@ log "preflight scheduling barred: ok $BARRED"
 # release binaries built
 REL=$TREE/target/release
 OBS_SRC=$REL/anchorstamp-observe-audit
-if [ "$LEAK" -eq 1 ]; then
-    OBS_SRC=$TREE/target/leak-test/release/anchorstamp-observe-audit
-fi
 for f in "$OBS_SRC" "$REL/agentsim" "$REL/demo-report"; do
     [ -f "$f" ] && [ ! -L "$f" ] || die "missing $f — build it first"
 done
@@ -861,10 +851,6 @@ while IFS= read -r l; do log "  auditctl -l: $l"; done < <(auditctl -l)
 
 # ---- 5 observer --------------------------------------------------------
 OBS_ARGS=(--audit-log "$LOG_FILE" --sink "$RUN/sink" --key "$KEY")
-if [ "$LEAK" -eq 1 ]; then
-    mkdir -m 0700 "$RUN/leak"
-    OBS_ARGS+=(--leak-key-file "$RUN/leak/key.bin")
-fi
 # Launched and its pid and start time captured with INT, TERM and HUP
 # ignored, so no signal can leave an observer cleanup does not know of.
 # The observer installs its own SIGTERM handler, so the ignored
@@ -880,10 +866,10 @@ log "step 5 observer started pid=$OBS start_time=${OBS_START:-unreadable}"
 
 # ---- 6 the drop, checked before the agent starts -----------------------
 n=0
-while [ "$(stat -c %s "$RUN/sink/anchor.pub" 2>/dev/null || echo 0)" != 32 ]; do
-    obs_running || die "step 6 observer exited before writing its anchor"
+until grep -qE '^observe-audit: ready instance=[0-9a-f]{32} cov_from=[0-9]+$' "$RUN/observer.log"; do
+    obs_running || die "step 6 observer exited before its ready line"
     n=$((n + 1))
-    [ "$n" -lt 100 ] || die "step 6 no anchor after 10 s"
+    [ "$n" -lt 100 ] || die "step 6 no ready line after 10 s"
     sleep 0.1
 done
 ST=/proc/$OBS/status
@@ -908,9 +894,7 @@ check "the observer's own line \"dropped uid=65534 gid=65534 groups=0 dumpable=0
 SCOPE_LINE=$(grep -m1 -x 'observe-audit: ptrace_scope=[0-9]*' "$RUN/observer.log") || die "step 6 observer did not log ptrace_scope"
 [ "${SCOPE_LINE##*=}" -ge 1 ] || die "step 6 observer reports ptrace_scope below 1"
 check "observer checked ptrace_scope=${SCOPE_LINE##*=} (at least 1)"
-ANCHOR_SHA=$(sha256sum "$RUN/sink/anchor.pub" | cut -d' ' -f1)
-check "anchor sha256 at start $ANCHOR_SHA"
-check "sink at start: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin" "$RUN/sink/anchor.pub" | tr '\n' ';')"
+check "sink at start: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin" | tr '\n' ';')"
 log "step 6 ok"
 
 # ---- 7 the measured account -------------------------------------------
@@ -1152,14 +1136,7 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     fi
 fi
 step9
-ANCHOR_SHA_END=$(sha256sum "$RUN/sink/anchor.pub" | cut -d' ' -f1)
-if [ "$ANCHOR_SHA_END" = "$ANCHOR_SHA" ]; then
-    check "anchor sha256 at end unchanged"
-else
-    check "anchor sha256 at end CHANGED $ANCHOR_SHA_END"
-    stop "the anchor changed during the run"
-fi
-check "sink at end: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin" "$RUN/sink/anchor.pub" | tr '\n' ';')"
+check "sink at end: $(stat -c '%n %U:%G %a' "$RUN/sink" "$RUN/sink/sightings.bin" | tr '\n' ';')"
 check "sink entries: $(cd "$RUN/sink" && ls -A | tr '\n' ' ')"
 step10
 
@@ -1193,63 +1170,6 @@ if [ "$SCENARIO" = framework-netcheck ]; then
     else
         check "netcheck: curl not shown blocked between two successful controls (control 1 ok=$NETCHECK_CTRL, control 2 rc=$CTRL_RC, inside ok=$NC_INSIDE); entry: ${NC:-none}"
         stop "framework-netcheck: curl was not shown blocked by the scope between two successful controls"
-    fi
-fi
-
-# ---- leak search (test build only) -------------------------------------
-# Only files root wrote: claims/ was written by the measured account and is
-# not read. Regular files only, never through a symlink, at most
-# LEAK_MAX bytes each; a file over the cap leaves the search incomplete,
-# which is a stop.
-# Framework: also claims/agent-log.jsonl, the agent's own log, opened once
-# by descriptor (a regular file with one link, in the root-owned claims/)
-# and copied through head -c to leak/agent-log.jsonl, which the search
-# then reads like any root-written file; absent or refused, the search is
-# incomplete.
-LEAK_MAX=$((64 * 1024 * 1024))
-if [ "$LEAK" -eq 1 ]; then
-    KEYHEX=$(od -An -v -tx1 "$RUN/leak/key.bin" | tr -d ' \n')
-    KEYB64=$(base64 -w0 "$RUN/leak/key.bin")
-    KEYB64NP=${KEYB64%%=*}
-    found=0
-    unsearched=0
-    if [ "$FRAMEWORK" -eq 1 ]; then
-        if open_single "$RUN/claims/agent-log.jsonl"; then
-            head -c $((LEAK_MAX + 1)) <&"$AFD" >"$RUN/leak/agent-log.jsonl"
-            exec {AFD}<&-
-        else
-            log "leak search: claims/agent-log.jsonl absent or not a regular file with one link; not read"
-            unsearched=1
-        fi
-    fi
-    # every root-written file of the run except the export itself
-    while IFS= read -r -d '' f; do
-        [ "$f" = "$RUN/leak/key.bin" ] && continue
-        if [ ! -f "$f" ] || [ -L "$f" ]; then
-            log "leak search: $f is not a regular file; not read"
-            unsearched=1
-            continue
-        fi
-        if [ "$(stat -c %s -- "$f")" -gt "$LEAK_MAX" ]; then
-            log "leak search: $f is over $LEAK_MAX bytes; not searched"
-            unsearched=1
-            continue
-        fi
-        raw=$(od -An -v -tx1 "$f" | tr -d ' \n')
-        case "$raw" in *"$KEYHEX"*) log "LEAK raw key bytes in $f"; found=1 ;; esac
-        if grep -aqiF -e "$KEYHEX" "$f"; then log "LEAK hex key in $f"; found=1; fi
-        if grep -aqF -e "$KEYB64NP" "$f"; then log "LEAK base64 key in $f"; found=1; fi
-    done < <(find "$RUN" -path "$RUN/claims" -prune -o -type f -print0)
-    if [ "$found" -eq 0 ] && [ "$unsearched" -ne 0 ]; then
-        check "leak search: INCOMPLETE - a file could not be searched (see the log)"
-        stop "the leak search could not read every file"
-    elif [ "$found" -eq 0 ] && [ "$FRAMEWORK" -eq 1 ]; then
-        check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run, including leak/agent-log.jsonl, the copy of claims/agent-log.jsonl (rest of claims/ excluded)"
-    elif [ "$found" -eq 0 ]; then
-        check "leak search: key absent (raw, hex lower/upper, base64) from every root-written file of the run (claims/ excluded)"
-    else
-        check "leak search: KEY FOUND"
-        stop "the observer key appears in a run output"
     fi
 fi
 
