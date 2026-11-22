@@ -384,6 +384,12 @@ systemctl is-active --quiet auditd || die "auditd not active"
 STATUS_BEFORE=$(auditctl -s)
 printf '%s\n' "$STATUS_BEFORE" | grep -qx 'enabled 1' || die "audit not 'enabled 1'"
 log "preflight audit: ok auditd active, enabled 1"
+# the suspension texts searched for below are this auditd's own
+AUDITD_BIN=$(command -v auditd) || die "auditd binary not found in $PATH"
+for t in "${AUDITD_SUSPEND_TEXTS[@]}"; do
+    grep -aqF -- "$t" "$AUDITD_BIN" || die "$AUDITD_BIN does not contain \"$t\": the suspension search would not match this auditd"
+done
+log "preflight auditd suspension texts: ok all ${#AUDITD_SUSPEND_TEXTS[@]} found in $AUDITD_BIN"
 # where auditd's own messages are read: the journal, if it holds any of
 # auditd's; else the syslog file from its size now, the same file
 # (device and inode) at search time
