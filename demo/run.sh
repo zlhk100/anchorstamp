@@ -329,6 +329,20 @@ netcheck_control() {
     CTRL_ERR=$(printf '%s' "${all%$'\n'*}" | tail -c 512 | tr '\n' ' ' | LC_ALL=C tr -cd '\40-\176')
 }
 
+# Whether auditd is writing records: a user record with text $1 sent with
+# auditctl -m, then $LOG_FILE polled for that exact text (fixed string,
+# read as root) every 0.2 s for up to 5 s. Returns 0 seen, 1 not seen,
+# 2 auditctl -m failed.
+audit_marker() {
+    local i
+    auditctl -m "$1" >/dev/null 2>&1 || return 2
+    for i in $(seq 1 25); do
+        if grep -qF -- "$1" "$LOG_FILE"; then return 0; fi
+        sleep 0.2
+    done
+    return 1
+}
+
 # ---- arguments ---------------------------------------------------------
 LEAK=0
 if [ "${1:-}" = "--leak-test" ]; then
@@ -554,8 +568,19 @@ if [ "$FRAMEWORK" -eq 1 ]; then
     log "preflight free space: ok $FREE bytes under $LOG_FILE, at least $NEED (STOP_FREE + 2 x max_log_file)"
 fi
 
-# ---- 2 install ---------------------------------------------------------
+# The run's identifier, fixed here so the markers can carry it.
 ID=$(date -u +%Y%m%dT%H%M%S)-$$
+# auditd is writing records now: a suspended auditd still accepts rules
+# and reports "enabled 1", but writes nothing.
+MARK_PRE="anchorstamp preflight $ID"
+audit_marker "$MARK_PRE" && r=0 || r=$?
+case "$r" in
+0) log "preflight audit marker: ok \"$MARK_PRE\" written to $LOG_FILE" ;;
+2) die "auditctl -m failed: auditd is not writing records (suspended?): restart auditd" ;;
+*) die "audit marker \"$MARK_PRE\" not in $LOG_FILE after 5 s: auditd is not writing records (suspended?): restart auditd" ;;
+esac
+
+# ---- 2 install ---------------------------------------------------------
 KEY=as-$ID
 [ -d "$INSTALL_BASE" ] || mkdir -m 0755 "$INSTALL_BASE"
 INST=$INSTALL_BASE/$ID
@@ -787,6 +812,15 @@ step10() {
     ba=$(printf '%s\n' "$status_after" | awk '$1=="backlog"{print $2}')
     check "audit lost before=$lb after=$la; backlog before=$bb after=$ba"
     if [ "$lb" != "$la" ] || [ "$bb" != "$ba" ]; then stop "audit lost or backlog changed during the run"; fi
+    # auditd still writing at the end of the run
+    local mark_end="anchorstamp end $ID"
+    audit_marker "$mark_end" && r=0 || r=$?
+    if [ "$r" -eq 0 ]; then
+        check "audit marker at the end: \"$mark_end\" written to $LOG_FILE"
+    else
+        check "audit marker at the end: \"$mark_end\" NOT written to $LOG_FILE (auditctl -m rc class $r)"
+        stop "auditd was not writing at the end of the run; audit evidence incomplete"
+    fi
     auditd_suspend_check "at step 10"
 }
 
