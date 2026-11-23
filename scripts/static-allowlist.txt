@@ -4,6 +4,17 @@ TERM crates/anchorstamp-observe-audit/src/main.rs set by the SIGTERM handler, re
 asx_tp observer/kernel/anchorstamp_exec/anchorstamp_exec.c the sched_process_exec tracepoint, set by init before the probe is registered and used by exit to unregister it; the probe signature carries no context to hold it
 asx_wq observer/kernel/anchorstamp_exec/anchorstamp_exec.c the ordered workqueue, created first in init and destroyed last in exit; the probe has no context to reach it otherwise
 asx_seq observer/kernel/anchorstamp_exec/anchorstamp_exec.c the per-load record sequence, written only by init, the ordered worker and exit, which never run concurrently
-asx_lost observer/kernel/anchorstamp_exec/anchorstamp_exec.c atomic count of execs not recorded, incremented by the probe on any CPU and exchanged to zero by the worker
+asx_loss observer/kernel/anchorstamp_exec/anchorstamp_exec.c the count and first/last exec_ns of execs not yet reported, updated by the probe on any CPU, the worker and exit, only under asx_loss_lock
+asx_loss_lock observer/kernel/anchorstamp_exec/anchorstamp_exec.c the leaf spinlock guarding asx_loss; the probe, the worker and exit take it, nothing is taken under it
+asx_armed observer/kernel/anchorstamp_exec/anchorstamp_exec.c the gate: set once by init with a release after ARMED is queued, read by the probe with an acquire; the probe has no context to reach it otherwise
+asx_dead observer/kernel/anchorstamp_exec/anchorstamp_exec.c set by the worker when ARMED was not measured, read by the worker and by exit after the drain; the ordered workqueue serialises them
+asx_fault_exec observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_exec_from observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_alloc observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_lost observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_final_lost observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_armed observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_lookup observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
+asx_fault_hits observer/kernel/anchorstamp_exec/anchorstamp_exec.c debug build only: fault injection setting/counter, read by the worker, init or exit; absent from the release module
 asx_pending observer/kernel/anchorstamp_exec/anchorstamp_exec.c atomic count of queued items, incremented by the probe on any CPU and decremented by the worker when it frees one; caps the queue so a burst of execs is counted as lost instead of exhausting memory
 asx_load_id observer/kernel/anchorstamp_exec/anchorstamp_exec.c the random per-load identifier, written once in init before the probe is registered, read by every record
