@@ -686,6 +686,7 @@ fn loads(
                 (_, Body::Load { .. }) => brk(ev, why("a second LOAD")),
                 (1, Body::Armed { .. }) => {}
                 (1, _) if !inst.v1 => brk(ev, why("the second record is not ARMED")),
+                (_, Body::Armed { .. }) => brk(ev, why("a second ARMED")),
                 _ => {}
             }
             if let Some(prior) = seen.get(&r.seq) {

@@ -288,6 +288,13 @@ fn load_order_violations_are_breaks() {
     let mut r = load_l(&[]);
     r.push(load_v2(2, LOAD_L, 1200));
     assert_eq!(breaks_of(&r).0, 1);
+    // a second ARMED of the same load; coverage stays at the first
+    let mut r = load_l(&[ex(7, 1500, x())]);
+    r.push(armed_v2(3, LOAD_L, 1400));
+    let (n, why) = breaks_of(&r);
+    assert_eq!(n, 1, "{why:?}");
+    assert!(why[0].contains("a second ARMED"), "{why:?}");
+    assert_eq!(tail(&r).instances[0].cov_from, Some(1100));
     // two distinct records with one seq: a break and a fork
     let mut r = load_l(&[ex(7, 1500, x())]);
     r.push(e(2, 8, 1600));
