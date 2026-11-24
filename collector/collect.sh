@@ -187,9 +187,24 @@ while :; do
             exit 2
         fi
     fi
-    t=$(date +%s%N)
-    must tpm2_quote -c "$K/ak.ctx" -l sha256:7,13 -q "$qual" -g sha256 \
-        -m "$r.msg" -s "$r.sig" -o "$r.pcrs" >/dev/null
+    # tpm2_quote fails when PCR 13 moves between its PCR read and the
+    # quote. Up to 3 retries, 1 s apart, each failure logged; the fourth
+    # attempt stops on failure as any step does. The attempt that succeeds
+    # writes .msg, .sig and .pcrs together; ms is its time alone.
+    qargs=(-c "$K/ak.ctx" -l "sha256:7,13" -q "$qual" -g sha256
+        -m "$r.msg" -s "$r.sig" -o "$r.pcrs")
+    try=1
+    while :; do
+        t=$(date +%s%N)
+        if [ "$try" -eq 4 ]; then
+            must tpm2_quote "${qargs[@]}" >/dev/null
+            break
+        fi
+        tpm2_quote "${qargs[@]}" >/dev/null && break
+        echo "retry: quote $round attempt $try failed $(date -Is); again in 1 s"
+        try=$((try + 1))
+        sleep 1
+    done
     ms=$(( ($(date +%s%N) - t) / 1000000 ))
     must tpm2_pcrread sha256:7 -o "$r.pcr7" >/dev/null
     cat "$LIST" >"$r.after"
