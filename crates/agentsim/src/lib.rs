@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! agentsim — a scripted stand-in for an agent framework's runtime
 //! behaviour. No model, no network. Sub-agents are threads in one process
 //! sharing one library session; actions are subprocesses.

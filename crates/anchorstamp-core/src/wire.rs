@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Layout-1 encode and decode. A record that does not parse exactly is
 //! malformed: wrong prefix or layout, a length out of range, an unknown
 //! flag value, or trailing bytes.

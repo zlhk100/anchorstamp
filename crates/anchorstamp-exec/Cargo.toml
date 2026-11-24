@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 [package]
 name = "anchorstamp-exec"
 description = "Command-line bridge: lets an agent framework in any language run a command through the library and append its claim."

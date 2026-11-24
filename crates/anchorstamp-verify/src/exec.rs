@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The `LINUX_EXEC` scheme, tag 0x0001, and its join and account over any
 //! profile's `Evidence`.
 //!

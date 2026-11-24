@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # observer/kernel/unload.sh — unload the anchorstamp_exec module. Root.
 #
 #   sudo observer/kernel/unload.sh

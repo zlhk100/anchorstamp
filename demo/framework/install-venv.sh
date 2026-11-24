@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # demo/framework/install-venv.sh — create the agent's venv, once, as root.
 #
 #   sudo demo/framework/install-venv.sh

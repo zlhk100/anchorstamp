@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 [package]
 name = "demo-report"
 description = "Reads a demo run directory and reports what the evidence supports."

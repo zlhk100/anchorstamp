@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! demo-report <run-dir> [--bundle <dir> --ak <der> --scope <uid>[,<uid>...] [--nonce <hex>]]
 //!
 //! With a bundle, the attestation key and the scope are required: the key

@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: GPL-2.0 OR MIT
+Copyright © 2026 Lei Zhou
+-->
+
 # anchorstamp_exec
 
 A kernel module that turns every successful exec into a record measured

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Profile S: unsigned sightings agree or say nothing; the upper bound is
 //! narrowed to lo + 2·tolerance; clock steps and parse rejects are holes;
 //! gaps span the times around them; the outcome is independent of stream

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Builds the chained, unsigned sightings of one source instance (profile
 //! S): the layout-1 sighting with no key id and no signature. The chain is
 //! not tamper evidence — anyone who can write the stream can recompute it

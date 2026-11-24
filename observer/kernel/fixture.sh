@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # observer/kernel/fixture.sh — capture a replay fixture: the IMA binary
 # measurement list and PCR 10 as the TPM reports it. Root; reads only.
 #

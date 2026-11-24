@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Every line the observer writes to its log. Numbers and fixed words
 //! only, no input bytes. Kept here so a test can produce each one.
 

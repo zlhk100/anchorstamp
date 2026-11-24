@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Scenario parsing, and the simulator run unprivileged on the modes that
 //! do not contact the audit system. The tamper probes run against a sink
 //! this user owns, to show they change nothing whatever they find.

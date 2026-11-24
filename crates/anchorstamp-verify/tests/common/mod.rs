@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Builders for reader tests: unsigned layout-1 sighting streams, shim
 //! records v1 and v2 inside IMA list entries, and `LINUX_EXEC` claims.
 

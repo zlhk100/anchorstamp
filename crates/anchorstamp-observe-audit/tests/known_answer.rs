@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Parser known answers: the real SYSCALL lines of a probe run on the
 //! target host, plus synthetic lines for the cases a probe cannot produce.
 //!

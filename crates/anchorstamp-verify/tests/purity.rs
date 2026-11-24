@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The reader is pure: none of its sources names a source of randomness,
 //! a clock or the network.
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Profile K without a valid quote: record decoding v1 and v2, entry
 //! checks, the replay, per-load order and interleaving, and the outcomes
 //! of an unattested (tail) list. Attested outcomes are exercised by the

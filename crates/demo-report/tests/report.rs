@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The report on a fixture run directory built with the observer's own
 //! record builder, and on a kernel bundle built by hand: the declaration,
 //! verdict words per source, grouping, health, counters, refusals, the

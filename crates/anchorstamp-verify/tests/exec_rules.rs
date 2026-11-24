@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The `LINUX_EXEC` rules over evidence in contract form, built by hand: a K
 //! load whose records sit in an attested prefix, each with its anchor.
 //! This exercises the decisive paths — `SubjectMismatch`, `Unobserved`, the

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The producer's return value. Every field is fixed at construction;
 //! there is no setter and no way for a caller to supply strength,
 //! vantage or backing.

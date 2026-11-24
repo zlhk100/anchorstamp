@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # Unprivileged test of run.sh's dumpable check. Takes proc_status_owner
 # verbatim from run.sh and runs it against two children of this script:
 # one left dumpable, one that sets PR_SET_DUMPABLE 0 on itself.

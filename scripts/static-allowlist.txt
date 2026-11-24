@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # Writable statics of this workspace: <symbol> <file> <reason>
 # Checked by scripts/check.sh (CS-RS-4). One line per static.
 TERM crates/anchorstamp-observe-audit/src/main.rs set by the SIGTERM handler, read by the main loop; a signal handler can reach no other state

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # scripts/dev-venv.sh <dir> — build the operator's development venv (ruff,
 # for scripts/check.sh CS-PY-1) from demo/framework/requirements-dev.lock.
 # Hash-checked install, binary wheels only. Refuses if <dir> exists.

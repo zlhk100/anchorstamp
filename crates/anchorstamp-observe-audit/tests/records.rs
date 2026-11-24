@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The observer's records: every one decodes and chains; control records
 //! carry their profile-S data; an exec's subject is the LINUX_EXEC
 //! observer form; the offset watch emits a clock step exactly when the

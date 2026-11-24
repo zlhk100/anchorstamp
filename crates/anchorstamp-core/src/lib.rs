@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! anchorstamp-core — record types and the layout-1 wire encoding.
 //!
 //! No dependencies, no hashing, no signatures. A subject is a scheme tag

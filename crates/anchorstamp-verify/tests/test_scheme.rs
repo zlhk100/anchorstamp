@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The TEST scheme: the index-axis rules over unsigned layout-1
 //! encodings, on streams shaped as the index-axis conformance vectors (the
 //! two that test signatures retire with layout 0). The generated vectors are checked

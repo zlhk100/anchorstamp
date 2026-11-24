@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Profile K: kernel exec records carried in IMA's binary measurement list
 //! (template `ima-buf`, PCR 13), anchored by TPM quotes signed by a pinned
 //! attestation key.

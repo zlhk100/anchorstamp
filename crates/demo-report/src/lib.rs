@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! demo-report — what one demo run's evidence supports, in words.
 //!
 //! Runs outside the measured account, from the root-owned install. Reads

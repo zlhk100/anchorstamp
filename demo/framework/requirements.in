@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # The agent's direct dependencies. The full closure, pinned with hashes, is
 # requirements.lock; only the lock is ever installed (--require-hashes).
 smolagents==1.26.0

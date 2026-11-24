@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! anchorstamp — the library. Runs inside the measured domain and is not a
 //! trusted component.
 //!

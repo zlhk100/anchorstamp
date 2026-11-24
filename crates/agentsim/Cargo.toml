@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 [package]
 name = "agentsim"
 description = "Deterministic agent-framework simulator: the measured party of the demo."

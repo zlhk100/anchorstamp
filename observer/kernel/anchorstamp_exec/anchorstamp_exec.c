@@ -2,6 +2,8 @@
 /*
  * anchorstamp_exec - kernel-side exec evidence anchored in the TPM.
  *
+ * Copyright © 2026 Lei Zhou
+ *
  * Declares: anchorstamp specification 0.4, layout 1, source profile K.
  *
  * Every successful exec becomes one record, handed to IMA as critical

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The probe lines. The file stores each 0x1D separator as the four
 //! characters `\x1d` so it stays a text file; the real lines hold no
 //! backslash, so the escape is unambiguous.

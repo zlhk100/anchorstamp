@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Audit SYSCALL record parser.
 //!
 //! The input is untrusted: the measured party chooses executable paths.

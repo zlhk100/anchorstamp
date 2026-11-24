@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0 OR MIT
+# Copyright © 2026 Lei Zhou
 # Out-of-tree build against the running kernel's headers, with the
 # compiler that built that kernel, by the name the kernel records (gcc-12
 # is a link to it; Kbuild warns on the name).

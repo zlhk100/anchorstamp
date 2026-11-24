@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! exec_loop — run a program N times and log each exec, for the evidence
 //! run's timing and coverage checks. A test tool: not installed, never
 //! run as root.

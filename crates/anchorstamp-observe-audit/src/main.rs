@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The observer process, a profile S source. Started by the run harness
 //! as root: opens its files, fixes its read position in the audit log,
 //! reads the boot id and the boot clock, drops to nobody, verifies the

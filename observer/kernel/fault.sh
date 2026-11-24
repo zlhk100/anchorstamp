@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # observer/kernel/fault.sh — load the fault-injection debug build of the
 # anchorstamp_exec module with one fixed setting. Root, after policy.sh.
 #

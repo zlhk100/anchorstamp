@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! anchorstamp-verify — the reader.
 //!
 //! Declares: anchorstamp specification 0.4, layout 1, reader.

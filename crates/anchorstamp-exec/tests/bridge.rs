@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The bridge, run unprivileged: one framed join reference per spawned
 //! program, none for a program that does not resolve, and the program's
 //! own exit status passed through.

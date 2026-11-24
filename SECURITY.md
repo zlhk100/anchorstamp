@@ -1,3 +1,9 @@
+<!--
+SPDX-License-Identifier: CC-BY-4.0
+Copyright © 2026 Lei Zhou
+https://creativecommons.org/licenses/by/4.0/
+-->
+
 # Security policy
 
 anchorstamp is a proof of concept. It has not been audited and should not

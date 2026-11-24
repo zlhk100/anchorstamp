@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # observer/kernel/policy.sh — add the IMA rule the anchorstamp_exec module
 # measures under. Root, once per boot, before load.sh.
 #

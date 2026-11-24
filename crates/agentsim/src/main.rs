@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! agentsim <scenario> <run-dir>
 //!
 //! Runs as the measured account. Writes join references to

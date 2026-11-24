@@ -1,3 +1,9 @@
+<!--
+SPDX-License-Identifier: CC-BY-4.0
+Copyright © 2026 Lei Zhou
+https://creativecommons.org/licenses/by/4.0/
+-->
+
 # anchorstamp
 
 [![Code: MIT OR Apache-2.0](https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)

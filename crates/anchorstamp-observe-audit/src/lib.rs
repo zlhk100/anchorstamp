@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! anchorstamp-observe-audit — the observer, a profile S source.
 //!
 //! Declares: anchorstamp specification 0.4, layout 1, source profile S.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The TEST scheme, 0xFFFF, for conformance only: the index-axis join
 //! and account rules, as written, over unsigned layout-1 sighting encodings. A
 //! record is valid iff it parses; there is no signature to check. A

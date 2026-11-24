@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Parser property: 100,000 mutated lines. No panic, and the parser
 //! sights a line exactly when an independent reference reader says the
 //! line is one of the run's execs — with the same fields.

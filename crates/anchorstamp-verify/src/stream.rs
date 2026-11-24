@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Streams of layout-1 sightings, shared by profile S and the TEST scheme:
 //! validation (a record is valid iff it parses), instances by index,
 //! gaps, breaks and forks. Order of the input never matters.

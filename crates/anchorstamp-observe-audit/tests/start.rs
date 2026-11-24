@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The binary's start sequence, unprivileged: it must stop at the drop,
 //! before its instance-start record and its ready line. The full sequence
 //! runs only as root.

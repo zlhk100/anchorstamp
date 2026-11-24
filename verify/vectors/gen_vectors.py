@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 """Conformance vectors for layout 1, written as hex text.
 
     python3 -I verify/vectors/gen_vectors.py

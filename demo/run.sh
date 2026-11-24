@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # demo/run.sh — one proof-of-concept run, as root via sudo.
 #
 #   sudo demo/run.sh <scenario>

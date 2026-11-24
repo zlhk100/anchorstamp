@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! Profile S: unsigned software sightings, layout 1.
 //!
 //! A record is valid iff it parses. Instances, gaps, breaks and forks are

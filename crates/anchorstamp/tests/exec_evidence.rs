@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Copyright © 2026 Lei Zhou
+
 //! The library's return contract, `LINUX_EXEC` subject.
 
 use std::os::unix::ffi::OsStrExt;

@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # collector/collect.sh — collect TPM-anchored exec evidence into a bundle.
 # Root (reads the IMA list, uses the TPM).
 #

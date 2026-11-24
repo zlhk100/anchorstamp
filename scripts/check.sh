@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
 # scripts/check.sh — the check target of the coding standard (docs/coding-standard.md).
 #
 #   scripts/check.sh                              run every rule
