@@ -15,12 +15,20 @@ ko=$here/anchorstamp_exec/anchorstamp_exec.ko
 
 [ "$(id -u)" = 0 ] || { echo "load.sh: run as root" >&2; exit 1; }
 echo "load.sh $(date -Is) kernel $(uname -r)"
+[ ! -L "$ko" ] || { echo "REFUSED: $ko is a symbolic link"; exit 1; }
 [ -f "$ko" ] || { echo "REFUSED: $ko not built"; exit 1; }
 vermagic=$(modinfo -F vermagic "$ko")
 case "$vermagic" in
 "$(uname -r) "*) ;;
 *) echo "REFUSED: built for '$vermagic', running $(uname -r)"; exit 1 ;;
 esac
+# The fault-injection build (make fault) has asx_fault_ parameters; the
+# released module has none.
+parms=$(modinfo -F parm "$ko")
+if grep -q '^asx_fault_' <<<"$parms"; then
+    echo "REFUSED: $ko has asx_fault_ parameters: it is the fault-injection build"
+    exit 1
+fi
 if grep -q '^anchorstamp_exec ' /proc/modules; then
     echo "REFUSED: anchorstamp_exec is already loaded"
     exit 1

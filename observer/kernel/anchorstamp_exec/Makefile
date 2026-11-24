@@ -12,7 +12,7 @@ CC := x86_64-linux-gnu-gcc-12
 FAULT_DIR ?= $(abspath $(CURDIR)/../../../target/asx-fault)
 
 all:
-	$(MAKE) -C $(KDIR) M=$(CURDIR) CC=$(CC) modules
+	$(MAKE) -C $(KDIR) M=$(CURDIR) CC=$(CC) KCFLAGS= modules
 
 fault:
 	mkdir -p $(FAULT_DIR)
