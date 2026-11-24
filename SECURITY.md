@@ -16,9 +16,9 @@ Please report privately through GitHub:
 **Security → Report a vulnerability** on this repository. Do not open a
 public issue for a vulnerability.
 
-Include what you did, what you expected the reader or observer to report,
-and what it reported instead. A failing scenario file or a short script is
-the most useful form.
+Include what you did, what you expected the reader or an observer to
+report, and what it reported instead. A failing scenario, a bundle, or a
+short script is the most useful form.
 
 This is a single-maintainer project. Expect an acknowledgement within a
 week and a fix or a written disposition on a best-effort basis. Coordinated
@@ -32,26 +32,39 @@ supports:
 
 - the reader reports `corroborated` for an action that did not happen, or
   for a different action than the one claimed
-- an action by the measured account that the observer does not record, and
-  that the report does not flag as a gap, a rejected record or a limit
-- the measured account altering, truncating or reordering the observer's
-  records or its anchor without the report showing it
-- the observer's signing key leaving the observer's memory
-- anything in `demo/run.sh` that could damage the host it runs on, leave
-  audit rules or processes behind, or run code the measured account could
-  have changed
+- the reader reports `contradicted` for an action that did happen as
+  claimed
+- an exec the kernel source neither records nor counts in a loss, while
+  its load claims coverage
+- the measured account altering, truncating or reordering either source's
+  evidence without the report showing it
+- the reader accepting a quote, or an attestation key, it should refuse
+- the kernel module crashing, hanging or leaking, or delaying an exec
+  beyond its own bounded work
+- anything in `demo/run.sh`, `collector/collect.sh` or the module's
+  scripts that could damage the host, leave audit rules, modules or
+  processes behind, or run code the measured account could have changed
 
 Out of scope — limits the project already states, in the documentation and
 in every report:
 
 - which sub-agent acted, when sub-agents share one process
 - that a corroborated claim proves the claimant caused the action
-- two executions that reuse one process ID with the same program
-- scripts, where the kernel records the interpreter
-- an observer whose position and coverage are self-declared, or whose
-  anchor is supplied by the operator
+- the software source: unsigned records, self-declared coverage, no
+  contradiction ever, a pid reused inside a claim's window with the same
+  file
+- scripts: the software source records the interpreter; the kernel source
+  agrees only with the cap *interpreted*
+- processes in a private mount namespace, under a chroot, or running an
+  unlinked file: flagged, never joined
+- an attestation key pinned by the operator, with no endorsement-key
+  certificate chain checked; the boot state (PCR 7) reported, not appraised
+- root on the observing host adding entries to PCR 13 outside a running
+  load (every kernel-source agreement carries the cap for it); root loading
+  kernel code; a compromised kernel or TPM
 - a reader running inside the measured account
-- a compromised kernel, or root on the observing host
+- throughput: under sustained exec load most execs are counted in losses,
+  not recorded
 
 If you think one of the stated limits is wrong, that is worth reporting
 too, as an ordinary issue.

@@ -34,17 +34,20 @@ with each of them rather than replacing any:
 - **Logging and tracing** record what the agent *reports*.
 - **Signing and provenance** prove a record was not *altered* after it was
   written.
-- **Platform attestation** proves what state the *machine* was in.
+- **Platform attestation** proves what state the *machine* was in, and
+  measurement frameworks such as IMA record what it executed.
 - **Policy engines** decide whether to *accept*.
 
-Every one of them starts from the record the agent produced. A signature
+Every one of them either starts from the record the agent produced, or
+measures the machine without asking what the agent claimed. A signature
 over a false record is a valid signature. An action the agent never
 reported leaves nothing to sign, nothing to trace, and nothing for policy
 to reject.
 
 What none of them answers is: *did an independent observer, one the agent
-could not influence, see this action happen?* That question sits between
-the record and the decision, and nothing currently fills it.
+could not influence, see this action happen — and which of the agent's
+claims does that settle?* That question sits between the record and the
+decision, and nothing currently fills it.
 
 ## Why it is getting harder
 
@@ -85,42 +88,45 @@ responsible had only the agent's own account to go on, and that account was
 wrong about what had happened and about what could be undone. Every tool in
 the list above would have stored, signed and passed that account faithfully.
 
-## A first measurement
+## What has been measured
 
 The method is small enough to demonstrate on one Linux laptop: an
-unprivileged account plays the agent, the kernel's audit subsystem is the
-observer, and a reader joins the two.
+unprivileged account plays the agent, an observer the agent cannot reach
+records what executes, and a reader joins the two.
 
-The first sixteen live runs all stopped before the agent ran. The harness
-checks, independently of the observer, that the observer cannot be made to
-dump its memory — the memory that holds its signing key. The check looked
-at the wrong file: on this kernel a protected process keeps the ownership
-of its process directory, and only the entries inside it change. The
-observer itself was correct every time. The check refused anyway, because
-it was built to refuse when it could not tell. That is the behaviour you
-want from the part of the system that runs as root.
+**First, a software observer.** The kernel's audit subsystem, read by a
+process the agent cannot signal or write to. It showed the core property
+early: commands the agent ran behind its library's back were listed as
+**unclaimed** by a reader that never saw the agent's log. A claim for a
+command that never ran was **contradicted**, and so was a claim pointing at
+a real process with the wrong program — *"the observer recorded this pid
+running /usr/bin/id; the claim says /usr/bin/true"*. A real framework,
+smolagents, and then a local model ran through a command-line bridge under
+the same observer, and a plugin's unlogged programs showed up as unclaimed.
 
-An earlier probe had already overturned one design assumption. The kernel
-timestamps audit records with a coarse clock, so a precise timestamp taken
-by the agent just before running a command was often a millisecond *later*
-than the kernel's record of that command. Matching on time order would
-have failed every honest claim. The match now uses the process and the
-executable, and time only to decide whether the observer's record had
-reached a claim yet.
+Two things broke on the way, and both shaped the design. The kernel's audit
+timestamps are coarse: a precise timestamp the agent took just before a
+command was often a millisecond *later* than the kernel's record of it, so
+matching on time order would have failed every honest claim. And a
+software observer cannot prove it saw everything: if its daemon pauses,
+records are lost without a trace in its own stream. That observer now
+**agrees or says nothing**. It never contradicts.
 
-With the check fixed, all eleven scenarios ran:
+**Then, an anchored observer.** A small kernel module on the exec path
+turns every exec into a record that IMA, the kernel's integrity subsystem,
+appends to its measurement list and extends into a TPM register. A TPM
+quote, signed inside the TPM, fixes the list's content and order up to that
+point. With it the reader can say something the software observer cannot:
+*this did not happen* — because the attested list shows everything in the
+window, in order, with any losses counted and time-bounded.
 
-- Honest claims: corroborated, every one.
-- Commands the agent ran behind its library's back: listed as
-  **unclaimed** — the reader found them without ever seeing the agent's log.
-- A claim for a command that never ran: **contradicted, unobserved**.
-- A claim pointing at a real process with the wrong program: **contradicted,
-  wrong subject** — *"the observer recorded this pid running /usr/bin/id;
-  the claim says /usr/bin/true"*.
-- Every attempt by the agent to alter the evidence or switch off the audit
-  rules: refused by the kernel or the filesystem.
-
-The walkthrough, with the real reports, is in [demo.md](demo.md).
+On the same laptop, with the module loaded, the honest claims were
+corroborated at the attested strength; the forged claims were contradicted,
+one as unobserved and one as the wrong file; a hand-made extend of the TPM
+register from user space was reported as *evidence broken*. Every failure
+path of the module was forced in a debug build, and each ended in a
+counted loss or a load that claims no coverage. The walkthrough, with the
+real reports, is in [demo.md](demo.md).
 
 ## Objectives
 
@@ -131,18 +137,22 @@ every unclaimed observation is listed.
 
 **2. Make independence a property of the deployment, not of good behaviour.**
 The observer is placed where the agent cannot reach it, by provisioning:
-no interface, no signal, no shared file. Its records are signed and
-chained, so a removal from the middle shows.
+no interface, no signal, no shared file. Where the platform allows, its
+record is anchored outside the operating system, as the TPM anchors the
+kernel source.
 
 **3. Keep the observer replaceable.**
-The Linux audit observer is a reference, not the product. The contract it
-meets is small, and an observer in the kernel, a hypervisor or a trusted
-execution environment can meet the same contract and earn a stronger
-verdict for it.
+The reader accepts any evidence source that meets one small contract:
+which process ran which file, when, and where its coverage starts, stops
+and has holes. The audit observer and the kernel module are references,
+not the product. An observer in a hypervisor or a trusted execution
+environment can meet the same contract and earn the strength its anchor
+supports; none is built yet.
 
 **4. State every limit in the output, not only in the documentation.**
-Each report says what it cannot show. A limit the reader of a report never
-sees is not a stated limit.
+Each verdict says why its strength stops where it does, and each report
+says what it cannot show. A limit the reader of a report never sees is not
+a stated limit.
 
 ## What this project is not
 
@@ -153,21 +163,18 @@ and replaces none.
 
 ## Where it stands
 
-Early, and specific about it. A proof of concept runs end to end on one
-Linux host, with the results above. The first half of a specification is
-written: record layout, signatures, chaining and the reader's rules, with
-conformance vectors.
+Early, and specific about it. Both observers run end to end on one Linux
+laptop, with the results above, and 56 conformance vectors fix the reader's
+verdicts field for field. The specification behind them is written and is
+being prepared for publication.
 
-A real agent framework, smolagents, now runs through a command-line
-bridge under the same observer, and a plugin's unlogged programs show up as
-unclaimed, as they do with the simulator.
-
-What is not yet shown: the production rule that matches a library's view
-of a process to the kernel's view across process namespaces; how often that
-rule collides when many commands start at once; and anchoring the
-observer's record to a party outside the machine. Each of those is planned
-work, not a settled claim.
+Not yet shown, each with a reason in the [README](../README.md#what-is-not-shown-yet):
+how many execs the anchored observer can record under sustained load (each
+record costs a TPM operation, and in a continuous loop most execs were
+only counted, not recorded); a check across a reboot; the local model on
+the anchored observer; completeness of the software observer under a model
+that fills the disk; any second machine, kernel or architecture.
 
 The most useful thing anyone outside this project can do right now is try
-to make the reader say *corroborated* for something that did not happen,
-and tell us how.
+to make the reader say *corroborated* — or *contradicted* — for something
+that is not so, and tell us how.
