@@ -1144,7 +1144,7 @@ step10
 
 # Processes of the measured account still alive: nothing more runs.
 if [ "$AGENTS_REMAIN" -ne 0 ]; then
-    log "STOP: measured-account processes survived the kill rounds; leak search and report skipped"
+    log "STOP: measured-account processes survived the kill rounds; report skipped"
     exit 1
 fi
 
