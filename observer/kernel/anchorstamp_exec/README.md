@@ -75,6 +75,38 @@ then `insmod anchorstamp_exec.ko`. The module is unsigned and taints the
 kernel. `../policy.sh`, `../load.sh` and `../unload.sh` do these steps and
 log what the kernel printed.
 
+## Preconditions — what you need to reproduce the results
+
+This module is the reference observer for the kernel source. It was built
+and tested on one machine; to reproduce, match these or expect to re-run
+the tests on yours.
+
+| Need | As tested | Why |
+|---|---|---|
+| Kernel | Ubuntu 22.04, `6.8.0-138-generic`, x86_64 | the module hooks the exec tracepoint and reads kernel structures; it is built for one kernel at a time |
+| Headers and compiler | `linux-headers-$(uname -r)`; `x86_64-linux-gnu-gcc-12`, the compiler that built that kernel | out-of-tree build; `load.sh` refuses a module built for another kernel |
+| Module loading | `module.sig_enforce` off and kernel lockdown off | the module is unsigned; loading it taints the kernel (`O`, `E`) |
+| IMA | enabled, SHA-256 (`ima_hash=sha256`, the Ubuntu default); the policy file still writable this boot | the policy rule above is written once per boot; IMA keeps the list and extends PCR 13 |
+| PCR 13 | used by nothing else on the machine | the reader replays PCR 13 from the list; any other extend breaks the replay until reboot, and the reader then reports *evidence broken* |
+| TPM | TPM 2.0 at `/dev/tpmrm0`, `tpm2-tools` | `collector/collect.sh` creates an attestation key under the endorsement key (credential activation) once, and quotes PCRs 7 and 13 |
+| Root | for the policy, load, unload and the collector | the reader and the report run as an ordinary user |
+
+To check a bundle, convert the attestation key you pinned (the collector's
+`ak.pem`, from its first run, kept where the measured account cannot write)
+to DER and pass it to the reader:
+
+    openssl pkey -pubin -in ak.pem -outform DER -out ak.der
+    demo-report <run-dir> --bundle <bundle-dir> --ak ak.der --scope <uid>
+
+Never take the key from a bundle you are checking: the bundle is transport,
+not a trusted party.
+
+What the module does not give you: a vendor-rooted key (the endorsement
+key's certificate chain is not checked), an appraised boot state (PCR 7 is
+reported, not judged), or protection against root on the same machine
+adding entries outside a running load. Each of these is printed with every
+verdict it bears on.
+
 ## Licence
 
 This module only: MIT or GPL-2.0 (`MODULE_LICENSE("Dual MIT/GPL")`), since
