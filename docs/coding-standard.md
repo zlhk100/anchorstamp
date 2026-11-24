@@ -39,3 +39,11 @@ reason.
 | ID | Rule | Reason | Check |
 |---|---|---|---|
 | CS-SH-1 | No shellcheck finding beyond `scripts/shellcheck-baseline.txt`, which records the findings of the scripts committed before this standard; a new script is therefore shellcheck clean. Every script sets `set -eu` (or stricter); `demo/run.sh` keeps its `set -eu`. | Scripts here run as root or produce evidence; an unset variable or an ignored failure must stop them. Existing findings are recorded, not hidden, and may only go down. | Findings of every `.sh` file under `demo/`, `scripts/`, `collector/` and `observer/kernel/`, keyed by file, code and line content (not line number), must all be in the baseline; and a `set -eu` line in every such file. The baseline is written once by `scripts/check.sh --write-shellcheck-baseline` and lowered when findings are fixed. |
+
+## Kernel C (`observer/kernel`)
+
+| ID | Rule | Reason | Check |
+|---|---|---|---|
+| CS-KC-1 | The module's C sources are clean under `checkpatch.pl --strict`. | The module runs in the kernel and follows the kernel's own conventions (`Documentation/process/coding-style.rst`), checked by the kernel's own tool. | `perl $KDIR/scripts/checkpatch.pl --strict --no-tree --quiet -f` over every `.c` file under `observer/kernel/anchorstamp_exec` except the generated `*.mod.c`. `KDIR` defaults to `/lib/modules/$(uname -r)/build`; `MISSING` when `checkpatch.pl` is absent there. |
+| CS-KC-2 | The module is sparse clean. | sparse checks the kernel's annotations (address spaces, endianness, lock context) that the compiler does not. | `make -C $KDIR M=<module dir> CC=$KCC C=2 modules` must succeed and print no `: warning:` or `: error:` line. `KCC` defaults to `x86_64-linux-gnu-gcc-12`. `MISSING` when sparse or `$KCC` is not installed. |
+| CS-KC-3 | Every writable file-scope static in the module's C is listed in `scripts/static-allowlist.txt` as `<symbol> <file> <reason>`. | As CS-RS-4: shared mutable state is justified where a reviewer can see it. | In the same `.c` files: every line-start `static` definition that is neither `const` nor a function (no parenthesis before its `=` or `;`), and every `static DEFINE_*()`, must be on the allowlist with a reason. |
