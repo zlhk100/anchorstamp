@@ -73,5 +73,6 @@ log what the kernel printed.
 ## Licence
 
 This module only: MIT or GPL-2.0 (`MODULE_LICENSE("Dual MIT/GPL")`), since
-it uses GPL-only kernel symbols. The rest of the repository is MIT OR
-Apache-2.0.
+it uses GPL-only kernel symbols. The licence texts are `LICENSE-GPL-2.0`
+and `LICENSE-MIT` at the root of the repository. The rest of the
+repository is MIT OR Apache-2.0.
