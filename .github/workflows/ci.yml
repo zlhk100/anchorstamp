@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright © 2026 Lei Zhou
+#
+# Build and test the workspace on stable and on the minimum supported Rust
+# version, then run the project's check target (scripts/check.sh).
+#
+# The only third-party action is actions/checkout, pinned by full commit
+# SHA (v7.0.1). The job uses the default token, read-only, and no secret.
+# The kernel rules of check.sh need kernel headers; where the runner has
+# none they report MISSING, which check.sh never counts as a pass.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: build and test (${{ matrix.toolchain }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, "1.87"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain
+        run: |
+          rustup toolchain install "${{ matrix.toolchain }}" --profile minimal
+          rustup default "${{ matrix.toolchain }}"
+          cargo --version
+      - name: build
+        run: cargo build --workspace --locked --all-targets
+      - name: test
+        run: cargo test --workspace --locked
+
+  check:
+    name: scripts/check.sh
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          cargo --version
+          cargo clippy --version
+      - name: checkers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck jq
+          cargo install --locked cargo-deny --version 0.22.0
+          shellcheck --version
+          jq --version
+          cargo deny --version
+      - name: check
+        run: scripts/check.sh
