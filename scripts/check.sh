@@ -25,7 +25,7 @@ NEW_CRATES=(anchorstamp-exec)
 BASELINE=scripts/clippy-baseline.txt
 SC_BASELINE=scripts/shellcheck-baseline.txt
 ALLOWLIST=scripts/static-allowlist.txt
-SHELL_DIRS=(demo scripts)
+SHELL_DIRS=(demo scripts collector observer/kernel)
 DEV_VENV=${DEV_VENV:-target/dev-venv}
 DEV_LOCK=demo/framework/requirements-dev.lock
 
