@@ -6,6 +6,14 @@ https://creativecommons.org/licenses/by/4.0/
 
 # Why this project exists
 
+A monitor that shares a failure domain with what it monitors fails with it.
+Functional safety calls this common-cause failure and designs it out.
+[Below the API, Part 1](https://medium.com/@zlhk100/the-agent-you-cant-audit-why-agentic-ai-needs-a-hardware-root-e4187b07ba9e)
+traced the same rule through the stack being built for AI agents and ended
+at an open problem: a runtime that "refuses to record". Every layer above it
+can verify what arrives; none can verify what never left. This project takes
+the recording obligation away from the agent.
+
 ## The problem
 
 AI agents now act. They run shell commands, edit files, call services and
@@ -23,8 +31,8 @@ nothing in the log tells them apart:
 2. The agent says it did something that never happened.
 3. The agent did something and never said so.
 
-The first is the common case. The second and third are the ones that
-matter, and a log written by the agent looks the same in all three.
+The second and third are the ones that matter, and a log written by the
+agent looks the same in all three.
 
 ## Why existing tools do not close it
 
@@ -45,9 +53,10 @@ reported leaves nothing to sign, nothing to trace, and nothing for policy
 to reject.
 
 What none of them answers is: *did an independent observer, one the agent
-could not influence, see this action happen — and which of the agent's
-claims does that settle?* That question sits between the record and the
-decision, and nothing currently fills it.
+could not influence, see this action happen — and which of the agent's claims
+does that settle?* That question sits between the record and the decision, and
+anchorstamp is built to answer it. It makes no claim to be first; the
+[README](../README.md#where-the-idea-comes-from) names related work.
 
 ## Why it is getting harder
 
@@ -64,11 +73,11 @@ agent calls them. An action taken by any other route — a subprocess the
 tool spawns, a command run by a different path, a child of a child — is
 recorded only if the agent's own code chooses to record it.
 
-A third property is a hard limit rather than a trend. Frameworks that
-support sub-agents run them inside one process. The application sees a
-planner, a coder and a reviewer. The operating system sees one program.
-No observer below the application can say which sub-agent acted, and this
-project does not pretend to.
+A third property is a hard limit rather than a trend. When a framework runs
+its sub-agents inside one process, the application sees a planner, a coder
+and a reviewer; the operating system sees one program, and no observer below
+the application can tell them apart. Running each sub-agent as its own
+process or account is the way out, and it is future work.
 
 ## What "can you believe it" looks like concretely
 
@@ -83,10 +92,10 @@ told him a rollback was impossible. The rollback worked.
 > database, faked data, told fibs galore.* The Register, 21 July 2025.
 > https://www.theregister.com/2025/07/21/replit_saastr_vibe_coding_incident/
 
-The point is not that one agent misbehaved. It is that the person
-responsible had only the agent's own account to go on, and that account was
-wrong about what had happened and about what could be undone. Every tool in
-the list above would have stored, signed and passed that account faithfully.
+The point is not that one agent misbehaved. It is that the person responsible
+had only the agent's own account to go on, and that account was wrong about
+what had happened and about what could be undone. The tools above all start
+from that same account.
 
 ## What has been measured
 
@@ -128,6 +137,32 @@ path of the module was forced in a debug build, and each ended in a
 counted loss or a load that claims no coverage. The walkthrough, with the
 real reports, is in [demo.md](demo.md).
 
+## Where it goes next
+
+The observer and its anchor rise together, each rung further from the
+agent's reach:
+
+| Rung | Where it observes | Anchor | Status |
+|---|---|---|---|
+| software | the Linux audit subsystem | none | built |
+| kernel | a module on the exec path | TPM quote | built; the reference observer |
+| hypervisor | below the kernel | to be designed | designed for |
+| Arm CCA Realm or another TEE | below the kernel | to be designed | designed for |
+
+Alongside every rung runs a separate question: proof to a party who trusts
+neither the agent nor its operator. Today the attestation key is pinned
+locally and the boot state is reported, not appraised. The endorsement-key
+chain to the TPM vendor and a boot state appraised by a remote verifier are
+the next step.
+
+Two further rungs move from *what* ran to *who* and *why*: actor granularity
+(each sub-agent as its own process or account, and causation checked
+through the parent process already in every record) and deputy provenance (a
+claim that commits its decision context before the action). All of this is
+future work. The
+[whitepaper](whitepaper/Not_the_Agents_Word_Lei_Zhou_2026-11-25.pdf) sets it
+out, with every residual risk and the control that would mitigate it.
+
 ## Objectives
 
 **1. Make the verdict the deliverable.**
@@ -165,16 +200,12 @@ and replaces none.
 
 Early, and specific about it. Both observers run end to end on one Linux
 laptop, with the results above, and 56 conformance vectors fix the reader's
-verdicts field for field. The specification behind them is written and is
-being prepared for publication.
+verdicts field for field. The specification behind them is written, not yet
+published.
 
-Not yet shown, each with a reason in the [README](../README.md#what-is-not-shown-yet):
-how many execs the anchored observer can record under sustained load (each
-record costs a TPM operation, and in a continuous loop most execs were
-only counted, not recorded); a check across a reboot; the local model on
-the anchored observer; completeness of the software observer under a model
-that fills the disk; any second machine, kernel or architecture.
+What is not shown yet, each with its reason and the control that would
+close it, is listed in the [README](../README.md#what-is-not-shown-yet).
 
 The most useful thing anyone outside this project can do right now is try
 to make the reader say *corroborated* — or *contradicted* — for something
-that is not so, and tell us how.
+that is not so, and report it as [SECURITY.md](../SECURITY.md) describes.

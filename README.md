@@ -18,6 +18,10 @@ decides on it. None of them checks it against an observation the agent could
 not touch. anchorstamp does that, and it also shows you what the agent did
 and never mentioned.
 
+Read the whitepaper, [*Not the Agent's Word*](docs/whitepaper/Not_the_Agents_Word_Lei_Zhou_2026-11-25.pdf)
+(PDF), or the [talk slides](docs/talks/2026-11-19-ai-security-engineers-toronto/)
+from 19 November 2026.
+
 ---
 
 ## The gap this fills
@@ -26,12 +30,14 @@ The agent ecosystem already has good tools at every layer around this one:
 
 | Layer | What it tells you | Examples |
 |---|---|---|
+| Access control | whether the request was *allowed* | Zero Trust identity, least privilege, policy at the resource |
 | Logging and tracing | what the agent *reported* doing | framework callbacks, OpenTelemetry GenAI |
 | Signing and provenance | that the record was not *altered* after it was written | in-toto, Sigstore, SCITT |
 | Platform attestation | what state the *platform* was in | TPM quotes, IMA, Keylime, confidential computing |
 | Policy | whether to *accept* | OPA, Cedar |
 
-Every one of them assumes the record's author was honest about what happened.
+Each starts from the agent's request or the record the agent produced, or
+measures the machine without asking what the agent claimed.
 A signed log proves the log was not changed. It does not prove the log is
 true. And an action the agent never wrote down leaves nothing to sign.
 
@@ -66,7 +72,8 @@ A log without a verdict is a story the agent told about itself.
 The reader takes evidence from any source that meets one small contract:
 which process ran which file, when, and where the source's coverage starts,
 stops and has holes. Two sources exist today. The reader never combines
-them: each gets its own verdict and its own stated strength.
+them: each gets its own verdict and its own stated strength. Both observe
+process executions only: not file writes, API calls or network traffic.
 
 | Source | Where it observes | What anchors it | Strongest verdict |
 |---|---|---|---|
@@ -105,7 +112,7 @@ agent as an unprivileged account that has no sudo and no terminal.
 | honest — 4 commands through the library | corroborated 4 of 4 | corroborated 4 of 4, ATTESTED |
 | forged claim, no such action | nothing to compare | **contradicted: unobserved** |
 | forged claim, real action of a different program | nothing to compare | **contradicted: subject mismatch** |
-| real framework, scripted plan (smolagents 1.26) | every bridged command corroborated | every bridged command corroborated, ATTESTED |
+| real framework, scripted plan (smolagents 1.26) | every bridged command corroborated; a plugin's `uname`, `id` and `uptime` **unclaimed** | every bridged command corroborated, ATTESTED; the same three **unclaimed** |
 | a `#!` script | records the interpreter; no agreement | corroborated, capped *interpreted*, interpreter named |
 | a program in a private mount namespace, a chroot, or an unlinked file | — | flagged in the record; it neither corroborates nor contradicts |
 | a root process extends PCR 13 by hand | — | **evidence broken**, for every claim of that boot |
@@ -141,36 +148,65 @@ Earlier runs of the software source, from before the kernel source existed
 
 ### What it does not show
 
+Each limit is paired with the control that would close it; all are future
+work.
+
 - **Who caused an action.** A corroborated claim proves an action matching
   the claim was independently observed. It does not prove the claimant
-  caused it.
+  caused it. *Next:* check that the observed exec was spawned by the
+  claimant's own process; the parent process id is already in every record.
 - **Which sub-agent acted.** Sub-agents in one process are one actor to the
-  kernel. No observer at this layer can recover that.
+  kernel. *Next:* run each sub-agent as its own process or account, or in a
+  cgroup assigned by a supervisor and recorded at exec.
+- **Why it acted, and on whose instruction.** *Next:* a claim that commits a
+  digest of its decision context, labelled by source, anchored before the
+  action.
 - **Whether the action was a good idea.** It evidences what executed, never
-  whether the decision was correct.
+  whether the decision was correct. That judgement stays with whoever reads
+  the verdict.
 - **Anything to a reader inside the agent's own domain.** The reader must run
   where the agent cannot reach.
+- **Anything a compromised kernel hides.** The TPM anchors the record, but
+  the observer sits in the kernel, so a compromised kernel could fail to
+  report. Stated, not tested. *Next:* an observer below the kernel (a
+  hypervisor, an Arm CCA Realm or another TEE) meeting the same contract.
 - **More than the anchor supports.** The attestation key is pinned by the
   operator, not chained to the TPM vendor; the boot state is reported, not
   appraised; root on the host can add (not remove) entries, so every kernel
-  agreement says so.
+  agreement says so. *Next:* the endorsement-key chain and a boot state
+  appraised by a remote verifier; a measurement register host root cannot
+  reach.
 
 ### What is not shown yet
 
-Work in progress, each with its reason:
+Work in progress, each with its reason and the control that would close it:
 
 - **Throughput under sustained load.** Each record costs a TPM extend. In a
   continuous exec loop most execs (76–85 %) were recorded only as counted
   losses. The cost of hashing a long path in the probe is not yet isolated.
+  *Next:* fewer TPM operations per recorded exec, such as several records per
+  extend.
 - **A reboot between quotes.** The records after the last quote are shown
   as unanchored, as designed; the check across a reboot itself has not run.
+  *Next:* the cross-reboot check.
 - **The local model on the kernel source.** The live-model runs above used
-  the software source only.
+  the software source only. *Next:* rerun the live-model scenarios on the
+  kernel source.
 - **Completeness under a live model that fills the disk.** The audit daemon
   can suspend; the harness detects a suspension, but the fix (the audit log
-  on its own filesystem, or a quota) is not in place.
+  on its own filesystem, or a quota) is not in place. *Next:* put that fix in
+  place.
 - **More than one host, kernel or architecture.** The kernel module is
-  built and tested for one kernel (6.8.0-138, x86_64).
+  built and tested for one kernel (6.8.0-138, x86_64). *Next:* further
+  kernels and architectures, Arm included.
+- **Actions other than process executions.** File writes, API calls and
+  network traffic are not observed. *Next:* further observers meeting the
+  same contract, such as eBPF or security-module hooks.
+- **A tool rewritten in place.** The record names a file by path, device and
+  inode, not by content. *Next:* a content digest in the record, or a join
+  with IMA's own measurement of the same file.
+- **The specification.** Written, not yet published; the conformance vectors
+  are public. *Next:* publish it.
 
 ---
 
@@ -183,6 +219,8 @@ domain with what it monitors fails with it. Agent evidence today is built
 the same way: the party that acts is the party that reports. anchorstamp
 moves the observation to a domain the agent cannot reach, and makes the gap
 between claim and observation visible.
+[Below the API, Part 1](https://medium.com/@zlhk100/the-agent-you-cant-audit-why-agentic-ai-needs-a-hardware-root-e4187b07ba9e)
+traces the same principle through the stack being built for AI agents.
 
 Other work has reached similar conclusions. TRACE, an open specification
 for hardware-attested runtime evidence for AI agents, now hosted by the
